@@ -1,42 +1,62 @@
-name: Build Hyperbit AVIF APK
+name: Build Hyperbit AVIF Android APK (1-to-1 Native Port)
 
 on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build-apk:
+  build-android-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
+      - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: 'temurin'
+          java-version: '17'
 
-      - name: Set up Android SDK 36 & Build-Tools 36.0.0
+      - name: Setup Android SDK & NDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
-      - name: Set up Gradle 8.11.1
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.11.1'
-
-      - name: Generate Android Project Structure & Source Code
+      - name: Install Android NDK 26 & CMake
         run: |
-          mkdir -p app/src/main/java/com/hyperbit/avif
-          mkdir -p app/src/main/res/layout
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
+          sudo apt-get update && sudo apt-get install -y ninja-build nasm
+
+      - name: Build Native libavif (avifenc & avifdec) for Android ARM64 & x86_64
+        run: |
+          NDK_DIR="$ANDROID_HOME/ndk/26.1.10909125"
+          git clone --depth 1 --branch v1.1.1 https://github.com/AOMediaCodec/libavif.git /tmp/libavif
+          for ABI in arm64-v8a x86_64; do
+            echo "=== Building libavif for $ABI ==="
+            cmake -S /tmp/libavif -B /tmp/build_$ABI -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=$ABI \
+              -DANDROID_PLATFORM=android-24 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DAVIF_CODEC_AOM=LOCAL \
+              -DAVIF_LIBYUV=LOCAL \
+              -DAVIF_BUILD_APPS=ON \
+              -DAVIF_BUILD_TESTS=OFF
+            cmake --build /tmp/build_$ABI --target avifenc avifdec -j$(nproc)
+            mkdir -p app/src/main/jniLibs/$ABI
+            cp /tmp/build_$ABI/avifenc app/src/main/jniLibs/$ABI/libavifenc.so
+            cp /tmp/build_$ABI/avifdec app/src/main/jniLibs/$ABI/libavifdec.so
+            chmod 755 app/src/main/jniLibs/$ABI/*.so
+          done
+
+      - name: Generate 1-to-1 Android Project Structure & Gradle Files
+        run: |
+          mkdir -p app/src/main/java/id/hyperbit/avif
           mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/drawable
-          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          mkdir -p app/src/main/res/xml
 
           cat << 'EOF' > settings.gradle
           pluginManagement {
@@ -59,60 +79,51 @@ jobs:
 
           cat << 'EOF' > build.gradle
           plugins {
-              id 'com.android.application' version '8.9.1' apply false
+              id 'com.android.application' version '8.2.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
           }
           EOF
 
           cat << 'EOF' > gradle.properties
           org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
           android.useAndroidX=true
-          android.enableJetifier=false
-          android.nonTransitiveRClass=true
+          kotlin.code.style=official
           EOF
-
-          rm -f app/hyperbit-release.jks
-          keytool -genkeypair -v \
-            -keystore app/hyperbit-release.jks \
-            -alias hyperbit \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass hyperbit123 -keypass hyperbit123 \
-            -dname "CN=Hyperbit AVIF, OU=Studio, O=Hyperbit, L=Bandung, S=West Java, C=ID"
 
           cat << 'EOF' > app/build.gradle
           plugins {
               id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
           }
 
           android {
-              namespace 'com.hyperbit.avif'
-              compileSdk 36
-              buildToolsVersion "36.0.0"
+              namespace 'id.hyperbit.avif'
+              compileSdk 34
 
               defaultConfig {
-                  applicationId "com.hyperbit.avif"
-                  minSdk 28
-                  targetSdk 35
-                  versionCode 248
-                  versionName "2.4.8-native"
+                  applicationId "id.hyperbit.avif"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 240
+                  versionName "2.4.0-android"
+                  ndk {
+                      abiFilters 'arm64-v8a', 'x86_64'
+                  }
               }
 
-              signingConfigs {
-                  release {
-                      storeFile file("hyperbit-release.jks")
-                      storePassword "hyperbit123"
-                      keyAlias "hyperbit"
-                      keyPassword "hyperbit123"
-                      enableV1Signing true
-                      enableV2Signing true
-                      enableV3Signing true
+              packaging {
+                  jniLibs {
+                      useLegacyPackaging = true
                   }
               }
 
               buildTypes {
                   release {
-                      signingConfig signingConfigs.release
                       minifyEnabled false
-                      shrinkResources false
+                      signingConfig signingConfigs.debug
+                  }
+                  debug {
+                      minifyEnabled false
                   }
               }
 
@@ -121,32 +132,45 @@ jobs:
                   targetCompatibility JavaVersion.VERSION_17
               }
 
-              lint {
-                  checkReleaseBuilds false
-                  abortOnError false
-              }
-
-              packaging {
-                  jniLibs {
-                      useLegacyPackaging true
-                  }
-              }
-          }
-
-          configurations.all {
-              resolutionStrategy {
-                  force 'androidx.annotation:annotation:1.9.1'
-                  force 'androidx.annotation:annotation-jvm:1.9.1'
+              kotlinOptions {
+                  jvmTarget = '17'
               }
           }
 
           dependencies {
-              implementation platform('org.jetbrains.kotlin:kotlin-bom:2.1.0')
-              implementation 'androidx.appcompat:appcompat:1.7.0'
-              implementation 'com.google.android.material:material:1.12.0'
+              implementation 'androidx.core:core-ktx:1.12.0'
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.11.0'
+              implementation 'androidx.documentfile:documentfile:1.0.1'
               implementation 'androidx.exifinterface:exifinterface:1.3.7'
-              implementation 'io.github.awxkee:avif-coder:2.2.1'
+              implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
           }
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values/strings.xml
+          <resources>
+              <string name="app_name">Hyperbit AVIF</string>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values/themes.xml
+          <resources>
+              <style name="Theme.HyperbitAVIF" parent="Theme.Material3.Dark.NoActionBar">
+                  <item name="colorPrimary">#4F46E5</item>
+                  <item name="colorSecondary">#10B981</item>
+                  <item name="android:statusBarColor">#0F172A</item>
+                  <item name="android:navigationBarColor">#020617</item>
+              </style>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/xml/file_paths.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths>
+              <cache-path name="cache" path="." />
+              <files-path name="files" path="." />
+              <external-path name="external" path="." />
+          </paths>
           EOF
 
           cat << 'EOF' > app/src/main/AndroidManifest.xml
@@ -160,10 +184,21 @@ jobs:
               <application
                   android:allowBackup="true"
                   android:icon="@mipmap/ic_launcher"
-                  android:label="Hyperbit AVIF"
+                  android:label="@string/app_name"
                   android:largeHeap="true"
                   android:supportsRtl="true"
                   android:theme="@style/Theme.HyperbitAVIF">
+
+                  <provider
+                      android:name="androidx.core.content.FileProvider"
+                      android:authorities="${applicationId}.fileprovider"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data
+                          android:name="android.support.FILE_PROVIDER_PATHS"
+                          android:resource="@xml/file_paths" />
+                  </provider>
+
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
@@ -172,1395 +207,1714 @@ jobs:
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="image/*" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND_MULTIPLE" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="image/*" />
+                      </intent-filter>
                   </activity>
               </application>
           </manifest>
           EOF
 
-          cat << 'EOF' > app/src/main/res/values/styles.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <style name="Theme.HyperbitAVIF" parent="Theme.MaterialComponents.NoActionBar">
-                  <item name="colorPrimary">#6366F1</item>
-                  <item name="colorPrimaryVariant">#4F46E5</item>
-                  <item name="colorSecondary">#10B981</item>
-                  <item name="android:windowBackground">#0B0F19</item>
-                  <item name="android:statusBarColor">#0B0F19</item>
-                  <item name="android:navigationBarColor">#0B0F19</item>
-              </style>
-          </resources>
-          EOF
-
-          cat << 'EOF' > app/src/main/res/drawable/ic_launcher_background.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="108dp"
-              android:height="108dp"
-              android:viewportWidth="108"
-              android:viewportHeight="108">
-              <path
-                  android:fillColor="#0F172A"
-                  android:pathData="M0,0h108v108h-108z" />
-              <path
-                  android:fillColor="#4F46E5"
-                  android:pathData="M14,14h80v80h-80z" />
-          </vector>
-          EOF
-
-          cat << 'EOF' > app/src/main/res/drawable/ic_launcher_foreground.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="108dp"
-              android:height="108dp"
-              android:viewportWidth="108"
-              android:viewportHeight="108">
-              <path
-                  android:fillColor="#10B981"
-                  android:pathData="M34,30h12v18h16v-18h12v48h-12v-18h-16v18h-12z" />
-          </vector>
-          EOF
-
-          cat << 'EOF' > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-              <background android:drawable="@drawable/ic_launcher_background" />
-              <foreground android:drawable="@drawable/ic_launcher_foreground" />
-          </adaptive-icon>
-          EOF
-
-          cat << 'EOF' > app/src/main/res/drawable/card_bg.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-              <solid android:color="#111827" />
-              <stroke android:width="1dp" android:color="#1F2937" />
-              <corners android:radius="12dp" />
-          </shape>
-          EOF
-
-          cat << 'EOF' > app/src/main/res/drawable/btn_primary.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-              <gradient android:startColor="#6366F1" android:endColor="#10B981" android:angle="0" />
-              <corners android:radius="10dp" />
-          </shape>
-          EOF
-
-          cat << 'EOF' > app/src/main/res/drawable/btn_secondary.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-              <solid android:color="#1E293B" />
-              <stroke android:width="1dp" android:color="#334155" />
-              <corners android:radius="10dp" />
-          </shape>
-          EOF
-
-          cat << 'EOF' > app/src/main/res/layout/activity_main.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-              android:id="@+id/rootScroll"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent"
-              android:background="#0B0F19"
-              android:clipToPadding="false"
-              android:fillViewport="true">
-
-              <LinearLayout
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:orientation="vertical"
-                  android:padding="14dp">
-
-                  <!-- Header -->
-                  <LinearLayout
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:background="@drawable/card_bg"
-                      android:gravity="center_vertical"
-                      android:orientation="horizontal"
-                      android:padding="12dp">
-
-                      <LinearLayout
-                          android:layout_width="0dp"
-                          android:layout_height="wrap_content"
-                          android:layout_weight="1"
-                          android:orientation="vertical">
-
-                          <TextView
-                              android:layout_width="wrap_content"
-                              android:layout_height="wrap_content"
-                              android:text="HYPERBIT AVIF STUDIO"
-                              android:textColor="#F8FAFC"
-                              android:textSize="17sp"
-                              android:textStyle="bold" />
-
-                          <TextView
-                              android:id="@+id/tvSubtitle"
-                              android:layout_width="wrap_content"
-                              android:layout_height="wrap_content"
-                              android:text="Native AV1 / libavif Encoder • v2.4.8"
-                              android:textColor="#34D399"
-                              android:textSize="11sp" />
-                      </LinearLayout>
-
-                      <TextView
-                          android:id="@+id/tvCoreBadge"
-                          android:layout_width="wrap_content"
-                          android:layout_height="wrap_content"
-                          android:background="#1E293B"
-                          android:paddingLeft="10dp"
-                          android:paddingTop="5dp"
-                          android:paddingRight="10dp"
-                          android:paddingBottom="5dp"
-                          android:text="8 CORES"
-                          android:textColor="#93C5FD"
-                          android:textSize="11sp"
-                          android:textStyle="bold" />
-                  </LinearLayout>
-
-                  <!-- Real-Time CPU & RAM Monitor -->
-                  <LinearLayout
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:layout_marginTop="10dp"
-                      android:background="@drawable/card_bg"
-                      android:orientation="vertical"
-                      android:padding="12dp">
-
-                      <LinearLayout
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:orientation="horizontal">
-
-                          <TextView
-                              android:id="@+id/tvCpuStats"
-                              android:layout_width="0dp"
-                              android:layout_height="wrap_content"
-                              android:layout_weight="1"
-                              android:text="CPU Workers: 0% • Active: 0"
-                              android:textColor="#E2E8F0"
-                              android:textSize="12sp"
-                              android:textStyle="bold" />
-
-                          <TextView
-                              android:id="@+id/tvRamStats"
-                              android:layout_width="wrap_content"
-                              android:layout_height="wrap_content"
-                              android:text="RAM: 0 / 0 MB"
-                              android:textColor="#A7F3D0"
-                              android:textSize="12sp" />
-                      </LinearLayout>
-
-                      <com.hyperbit.avif.CpuGraphView
-                          android:id="@+id/cpuGraphView"
-                          android:layout_width="match_parent"
-                          android:layout_height="68dp"
-                          android:layout_marginTop="8dp" />
-                  </LinearLayout>
-
-                  <!-- Encoding Settings -->
-                  <LinearLayout
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:layout_marginTop="10dp"
-                      android:background="@drawable/card_bg"
-                      android:orientation="vertical"
-                      android:padding="12dp">
-
-                      <TextView
-                          android:layout_width="wrap_content"
-                          android:layout_height="wrap_content"
-                          android:text="ENCODER PARAMETERS"
-                          android:textColor="#94A3B8"
-                          android:textSize="11sp"
-                          android:textStyle="bold" />
-
-                      <!-- Format & Threads -->
-                      <LinearLayout
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:layout_marginTop="8dp"
-                          android:orientation="horizontal">
-
-                          <LinearLayout
-                              android:layout_width="0dp"
-                              android:layout_height="wrap_content"
-                              android:layout_marginEnd="6dp"
-                              android:layout_weight="1"
-                              android:orientation="vertical">
-
-                              <TextView
-                                  android:layout_width="wrap_content"
-                                  android:layout_height="wrap_content"
-                                  android:text="Output Format"
-                                  android:textColor="#CBD5E1"
-                                  android:textSize="11sp" />
-
-                              <Spinner
-                                  android:id="@+id/spFormat"
-                                  android:layout_width="match_parent"
-                                  android:layout_height="40dp"
-                                  android:layout_marginTop="4dp"
-                                  android:background="#1E293B" />
-                          </LinearLayout>
-
-                          <LinearLayout
-                              android:layout_width="0dp"
-                              android:layout_height="wrap_content"
-                              android:layout_marginStart="6dp"
-                              android:layout_weight="1"
-                              android:orientation="vertical">
-
-                              <TextView
-                                  android:layout_width="wrap_content"
-                                  android:layout_height="wrap_content"
-                                  android:text="CPU Threads (-j)"
-                                  android:textColor="#CBD5E1"
-                                  android:textSize="11sp" />
-
-                              <Spinner
-                                  android:id="@+id/spThreads"
-                                  android:layout_width="match_parent"
-                                  android:layout_height="40dp"
-                                  android:layout_marginTop="4dp"
-                                  android:background="#1E293B" />
-                          </LinearLayout>
-                      </LinearLayout>
-
-                      <!-- Quality Slider -->
-                      <LinearLayout
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:layout_marginTop="10dp"
-                          android:orientation="horizontal">
-
-                          <TextView
-                              android:id="@+id/tvQualityLabel"
-                              android:layout_width="0dp"
-                              android:layout_height="wrap_content"
-                              android:layout_weight="1"
-                              android:text="Quality: 68% (Balanced AV1)"
-                              android:textColor="#F8FAFC"
-                              android:textSize="12sp"
-                              android:textStyle="bold" />
-
-                          <TextView
-                              android:id="@+id/tvEstSize"
-                              android:layout_width="wrap_content"
-                              android:layout_height="wrap_content"
-                              android:text="Est. Savings: ~65%"
-                              android:textColor="#34D399"
-                              android:textSize="11sp" />
-                      </LinearLayout>
-
-                      <SeekBar
-                          android:id="@+id/sbQuality"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:layout_marginTop="4dp"
-                          android:max="100"
-                          android:progress="68" />
-
-                      <!-- Quality Presets -->
-                      <LinearLayout
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:layout_marginTop="6dp"
-                          android:orientation="horizontal">
-
-                          <androidx.appcompat.widget.AppCompatButton
-                              android:id="@+id/btnPreset49"
-                              android:layout_width="0dp"
-                              android:layout_height="34dp"
-                              android:layout_marginEnd="4dp"
-                              android:layout_weight="1"
-                              android:background="@drawable/btn_secondary"
-                              android:text="49 Web"
-                              android:textAllCaps="false"
-                              android:textColor="#E2E8F0"
-                              android:textSize="10sp" />
-
-                          <androidx.appcompat.widget.AppCompatButton
-                              android:id="@+id/btnPreset68"
-                              android:layout_width="0dp"
-                              android:layout_height="34dp"
-                              android:layout_marginEnd="4dp"
-                              android:layout_weight="1"
-                              android:background="@drawable/btn_secondary"
-                              android:text="68 Std"
-                              android:textAllCaps="false"
-                              android:textColor="#E2E8F0"
-                              android:textSize="10sp" />
-
-                          <androidx.appcompat.widget.AppCompatButton
-                              android:id="@+id/btnPreset82"
-                              android:layout_width="0dp"
-                              android:layout_height="34dp"
-                              android:layout_marginEnd="4dp"
-                              android:layout_weight="1"
-                              android:background="@drawable/btn_secondary"
-                              android:text="82 High"
-                              android:textAllCaps="false"
-                              android:textColor="#E2E8F0"
-                              android:textSize="10sp" />
-
-                          <androidx.appcompat.widget.AppCompatButton
-                              android:id="@+id/btnPreset95"
-                              android:layout_width="0dp"
-                              android:layout_height="34dp"
-                              android:layout_weight="1"
-                              android:background="@drawable/btn_secondary"
-                              android:text="95 Max"
-                              android:textAllCaps="false"
-                              android:textColor="#E2E8F0"
-                              android:textSize="10sp" />
-                      </LinearLayout>
-
-                      <!-- Resize & Speed -->
-                      <LinearLayout
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:layout_marginTop="10dp"
-                          android:orientation="horizontal">
-
-                          <LinearLayout
-                              android:layout_width="0dp"
-                              android:layout_height="wrap_content"
-                              android:layout_marginEnd="6dp"
-                              android:layout_weight="1"
-                              android:orientation="vertical">
-
-                              <TextView
-                                  android:layout_width="wrap_content"
-                                  android:layout_height="wrap_content"
-                                  android:text="Scale / Max Resolution"
-                                  android:textColor="#CBD5E1"
-                                  android:textSize="11sp" />
-
-                              <Spinner
-                                  android:id="@+id/spScale"
-                                  android:layout_width="match_parent"
-                                  android:layout_height="40dp"
-                                  android:layout_marginTop="4dp"
-                                  android:background="#1E293B" />
-                          </LinearLayout>
-
-                          <LinearLayout
-                              android:layout_width="0dp"
-                              android:layout_height="wrap_content"
-                              android:layout_marginStart="6dp"
-                              android:layout_weight="1"
-                              android:orientation="vertical">
-
-                              <TextView
-                                  android:layout_width="wrap_content"
-                                  android:layout_height="wrap_content"
-                                  android:text="Speed / Effort"
-                                  android:textColor="#CBD5E1"
-                                  android:textSize="11sp" />
-
-                              <Spinner
-                                  android:id="@+id/spSpeed"
-                                  android:layout_width="match_parent"
-                                  android:layout_height="40dp"
-                                  android:layout_marginTop="4dp"
-                                  android:background="#1E293B" />
-                          </LinearLayout>
-                      </LinearLayout>
-                  </LinearLayout>
-
-                  <!-- Action Buttons -->
-                  <LinearLayout
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:layout_marginTop="10dp"
-                      android:orientation="horizontal">
-
-                      <androidx.appcompat.widget.AppCompatButton
-                          android:id="@+id/btnPickImages"
-                          android:layout_width="0dp"
-                          android:layout_height="44dp"
-                          android:layout_marginEnd="6dp"
-                          android:layout_weight="1"
-                          android:background="@drawable/btn_secondary"
-                          android:text="+ PILIH GAMBAR"
-                          android:textColor="#F8FAFC"
-                          android:textSize="12sp"
-                          android:textStyle="bold" />
-
-                      <androidx.appcompat.widget.AppCompatButton
-                          android:id="@+id/btnConvert"
-                          android:layout_width="0dp"
-                          android:layout_height="44dp"
-                          android:layout_marginStart="6dp"
-                          android:layout_weight="1"
-                          android:background="@drawable/btn_primary"
-                          android:text="CONVERT BATCH"
-                          android:textColor="#FFFFFF"
-                          android:textSize="12sp"
-                          android:textStyle="bold" />
-                  </LinearLayout>
-
-                  <LinearLayout
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:layout_marginTop="8dp"
-                      android:orientation="horizontal">
-
-                      <androidx.appcompat.widget.AppCompatButton
-                          android:id="@+id/btnStop"
-                          android:layout_width="0dp"
-                          android:layout_height="38dp"
-                          android:layout_marginEnd="6dp"
-                          android:layout_weight="1"
-                          android:background="@drawable/btn_secondary"
-                          android:enabled="false"
-                          android:text="STOP"
-                          android:textColor="#FCA5A5"
-                          android:textSize="11sp" />
-
-                      <androidx.appcompat.widget.AppCompatButton
-                          android:id="@+id/btnExportZip"
-                          android:layout_width="0dp"
-                          android:layout_height="38dp"
-                          android:layout_marginEnd="6dp"
-                          android:layout_weight="1"
-                          android:background="@drawable/btn_secondary"
-                          android:enabled="false"
-                          android:text="EXPORT .ZIP"
-                          android:textColor="#93C5FD"
-                          android:textSize="11sp" />
-
-                      <androidx.appcompat.widget.AppCompatButton
-                          android:id="@+id/btnClear"
-                          android:layout_width="0dp"
-                          android:layout_height="38dp"
-                          android:layout_weight="1"
-                          android:background="@drawable/btn_secondary"
-                          android:text="CLEAR"
-                          android:textColor="#CBD5E1"
-                          android:textSize="11sp" />
-                  </LinearLayout>
-
-                  <!-- Progress & Queue -->
-                  <LinearLayout
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:layout_marginTop="10dp"
-                      android:background="@drawable/card_bg"
-                      android:orientation="vertical"
-                      android:padding="12dp">
-
-                      <TextView
-                          android:id="@+id/tvQueueSummary"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Antrean: 0 file • Total Input: 0 KB"
-                          android:textColor="#E2E8F0"
-                          android:textSize="12sp"
-                          android:textStyle="bold" />
-
-                      <ProgressBar
-                          android:id="@+id/progressBar"
-                          style="?android:attr/progressBarStyleHorizontal"
-                          android:layout_width="match_parent"
-                          android:layout_height="8dp"
-                          android:layout_marginTop="8dp"
-                          android:max="100"
-                          android:progress="0" />
-
-                      <LinearLayout
-                          android:id="@+id/queueContainer"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:layout_marginTop="8dp"
-                          android:orientation="vertical" />
-                  </LinearLayout>
-
-                  <!-- Diagnostic Log -->
-                  <LinearLayout
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:layout_marginTop="10dp"
-                      android:background="@drawable/card_bg"
-                      android:orientation="vertical"
-                      android:padding="12dp">
-
-                      <TextView
-                          android:layout_width="wrap_content"
-                          android:layout_height="wrap_content"
-                          android:text="DIAGNOSTIC LOG"
-                          android:textColor="#94A3B8"
-                          android:textSize="11sp"
-                          android:textStyle="bold" />
-
-                      <TextView
-                          android:id="@+id/tvLog"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:layout_marginTop="6dp"
-                          android:fontFamily="monospace"
-                          android:text="[READY] Native libavif (HeifCoder) siap."
-                          android:textColor="#94A3B8"
-                          android:textSize="10sp" />
-                  </LinearLayout>
-
-              </LinearLayout>
-          </ScrollView>
-          EOF
-
-          cat << 'EOF' > app/src/main/java/com/hyperbit/avif/CpuGraphView.java
-          package com.hyperbit.avif;
-
-          import android.content.Context;
-          import android.graphics.Canvas;
-          import android.graphics.Color;
-          import android.graphics.Paint;
-          import android.graphics.Path;
-          import android.util.AttributeSet;
-          import android.view.View;
-
-          import java.util.LinkedList;
-
-          public class CpuGraphView extends View {
-              private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-              private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-              private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-              private final LinkedList<Float> samples = new LinkedList<>();
-              private static final int MAX_SAMPLES = 48;
-
-              public CpuGraphView(Context context, AttributeSet attrs) {
-                  super(context, attrs);
-                  gridPaint.setColor(Color.parseColor("#1E293B"));
-                  gridPaint.setStrokeWidth(2f);
-
-                  linePaint.setColor(Color.parseColor("#10B981"));
-                  linePaint.setStrokeWidth(4f);
-                  linePaint.setStyle(Paint.Style.STROKE);
-
-                  fillPaint.setColor(Color.parseColor("#2610B981"));
-                  fillPaint.setStyle(Paint.Style.FILL);
-
-                  for (int i = 0; i < MAX_SAMPLES; i++) {
-                      samples.add(0f);
-                  }
-              }
-
-              public void pushSample(float pct) {
-                  float clamped = Math.max(0f, Math.min(100f, pct));
-                  if (samples.size() >= MAX_SAMPLES) {
-                      samples.removeFirst();
-                  }
-                  samples.add(clamped);
-                  if (clamped > 80f) {
-                      linePaint.setColor(Color.parseColor("#F43F5E"));
-                      fillPaint.setColor(Color.parseColor("#26F43F5E"));
-                  } else if (clamped > 45f) {
-                      linePaint.setColor(Color.parseColor("#6366F1"));
-                      fillPaint.setColor(Color.parseColor("#266366F1"));
-                  } else {
-                      linePaint.setColor(Color.parseColor("#10B981"));
-                      fillPaint.setColor(Color.parseColor("#2610B981"));
-                  }
-                  invalidate();
-              }
-
-              @Override
-              protected void onDraw(Canvas canvas) {
-                  super.onDraw(canvas);
-                  float w = getWidth();
-                  float h = getHeight();
-                  if (w <= 0 || h <= 0) return;
-
-                  canvas.drawColor(Color.parseColor("#0B0F19"));
-                  canvas.drawLine(0, h * 0.25f, w, h * 0.25f, gridPaint);
-                  canvas.drawLine(0, h * 0.50f, w, h * 0.50f, gridPaint);
-                  canvas.drawLine(0, h * 0.75f, w, h * 0.75f, gridPaint);
-
-                  if (samples.size() < 2) return;
-
-                  Path strokePath = new Path();
-                  Path areaPath = new Path();
-                  float stepX = w / (MAX_SAMPLES - 1);
-
-                  areaPath.moveTo(0, h);
-                  int idx = 0;
-                  for (Float val : samples) {
-                      float x = idx * stepX;
-                      float y = h - (val / 100f) * (h - 8f) - 4f;
-                      if (idx == 0) {
-                          strokePath.moveTo(x, y);
-                      } else {
-                          strokePath.lineTo(x, y);
-                      }
-                      areaPath.lineTo(x, y);
-                      idx++;
-                  }
-                  areaPath.lineTo(w, h);
-                  areaPath.close();
-
-                  canvas.drawPath(areaPath, fillPaint);
-                  canvas.drawPath(strokePath, linePaint);
-              }
-          }
-          EOF
-
-          cat << 'EOF' > app/src/main/java/com/hyperbit/avif/MainActivity.java
-          package com.hyperbit.avif;
-
-          import android.app.ActivityManager;
-          import android.content.ClipData;
-          import android.content.ContentValues;
-          import android.content.Context;
-          import android.content.Intent;
-          import android.database.Cursor;
-          import android.graphics.Bitmap;
-          import android.graphics.BitmapFactory;
-          import android.graphics.Canvas;
-          import android.graphics.Color;
-          import android.graphics.Matrix;
-          import android.net.Uri;
-          import android.os.Build;
-          import android.os.Bundle;
-          import android.os.Environment;
-          import android.os.Handler;
-          import android.os.Looper;
-          import android.os.Process;
-          import android.os.SystemClock;
-          import android.provider.MediaStore;
-          import android.provider.OpenableColumns;
-          import android.view.View;
-          import android.view.ViewGroup;
-          import android.widget.ArrayAdapter;
-          import android.widget.Button;
-          import android.widget.LinearLayout;
-          import android.widget.ProgressBar;
-          import android.widget.SeekBar;
-          import android.widget.Spinner;
-          import android.widget.TextView;
-          import android.widget.Toast;
-
-          import androidx.activity.result.ActivityResultLauncher;
-          import androidx.activity.result.contract.ActivityResultContracts;
-          import androidx.appcompat.app.AppCompatActivity;
-          import androidx.core.graphics.Insets;
-          import androidx.core.view.ViewCompat;
-          import androidx.core.view.WindowInsetsCompat;
-          import androidx.exifinterface.media.ExifInterface;
-
-          import com.radzivon.bartoshyk.avif.coder.HeifCoder;
-
-          import java.io.ByteArrayOutputStream;
-          import java.io.File;
-          import java.io.FileOutputStream;
-          import java.io.InputStream;
-          import java.io.OutputStream;
-          import java.lang.reflect.InvocationTargetException;
-          import java.lang.reflect.Method;
-          import java.text.SimpleDateFormat;
-          import java.util.ArrayList;
-          import java.util.Date;
-          import java.util.HashSet;
-          import java.util.List;
-          import java.util.Locale;
-          import java.util.Set;
-          import java.util.concurrent.ExecutorService;
-          import java.util.concurrent.Executors;
-          import java.util.concurrent.atomic.AtomicBoolean;
-          import java.util.concurrent.atomic.AtomicInteger;
-          import java.util.zip.ZipEntry;
-          import java.util.zip.ZipOutputStream;
-
-          public class MainActivity extends AppCompatActivity {
-
-              private static class QueueItem {
-                  final Uri uri;
-                  final String originalName;
-                  final long inputBytes;
-                  String status = "Queued";
-                  String outputName = "";
-                  long outputBytes = 0;
-                  byte[] encodedData = null;
-
-                  QueueItem(Uri uri, String originalName, long inputBytes) {
-                      this.uri = uri;
-                      this.originalName = originalName;
-                      this.inputBytes = inputBytes;
-                  }
-              }
-
-              private final List<QueueItem> queue = new ArrayList<>();
-              private final AtomicBoolean isRunning = new AtomicBoolean(false);
-              private final AtomicBoolean stopRequested = new AtomicBoolean(false);
-              private final AtomicInteger activeWorkers = new AtomicInteger(0);
-              private final Handler uiHandler = new Handler(Looper.getMainLooper());
-
-              private CpuGraphView cpuGraphView;
-              private TextView tvCpuStats, tvRamStats, tvQualityLabel, tvEstSize, tvQueueSummary, tvLog;
-              private Spinner spFormat, spThreads, spScale, spSpeed;
-              private SeekBar sbQuality;
-              private Button btnPickImages, btnConvert, btnStop, btnExportZip, btnClear;
-              private ProgressBar progressBar;
-              private LinearLayout queueContainer;
-
-              private int cpuCores = 4;
-              private long lastCpuTimeMs = 0;
-              private long lastWallTimeMs = 0;
-
-              private final ActivityResultLauncher<Intent> pickerLauncher =
-                  registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
-                      if (result.getResultCode() == RESULT_OK && result.getData() != null) {
-                          Intent data = result.getData();
-                          int added = 0;
-                          if (data.getClipData() != null) {
-                              ClipData clip = data.getClipData();
-                              for (int i = 0; i < clip.getItemCount(); i++) {
-                                  if (addUriToQueue(clip.getItemAt(i).getUri())) added++;
-                              }
-                          } else if (data.getData() != null) {
-                              if (addUriToQueue(data.getData())) added++;
-                          }
-                          appendLog("Ditambahkan " + added + " file ke antrean.");
-                          refreshQueueUI();
-                      }
-                  });
-
-              @Override
-              protected void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
-                  setContentView(R.layout.activity_main);
-
-                  View rootScroll = findViewById(R.id.rootScroll);
-                  ViewCompat.setOnApplyWindowInsetsListener(rootScroll, (v, windowInsets) -> {
-                      Insets bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
-                      v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-                      return windowInsets;
-                  });
-
-                  cpuCores = Math.max(1, Runtime.getRuntime().availableProcessors());
-                  TextView tvCoreBadge = findViewById(R.id.tvCoreBadge);
-                  tvCoreBadge.setText(cpuCores + " CORES");
-
-                  cpuGraphView = findViewById(R.id.cpuGraphView);
-                  tvCpuStats = findViewById(R.id.tvCpuStats);
-                  tvRamStats = findViewById(R.id.tvRamStats);
-                  tvQualityLabel = findViewById(R.id.tvQualityLabel);
-                  tvEstSize = findViewById(R.id.tvEstSize);
-                  tvQueueSummary = findViewById(R.id.tvQueueSummary);
-                  tvLog = findViewById(R.id.tvLog);
-
-                  spFormat = findViewById(R.id.spFormat);
-                  spThreads = findViewById(R.id.spThreads);
-                  spScale = findViewById(R.id.spScale);
-                  spSpeed = findViewById(R.id.spSpeed);
-                  sbQuality = findViewById(R.id.sbQuality);
-
-                  btnPickImages = findViewById(R.id.btnPickImages);
-                  btnConvert = findViewById(R.id.btnConvert);
-                  btnStop = findViewById(R.id.btnStop);
-                  btnExportZip = findViewById(R.id.btnExportZip);
-                  btnClear = findViewById(R.id.btnClear);
-                  progressBar = findViewById(R.id.progressBar);
-                  queueContainer = findViewById(R.id.queueContainer);
-
-                  setupSpinners();
-                  setupListeners();
-                  startTelemetryLoop();
-              }
-
-              private void setupSpinners() {
-                  setDarkSpinner(spFormat, new String[]{"AVIF (Native AV1)", "HEIC (Native HEVC)", "WEBP", "JPEG"});
-
-                  List<String> threadOpts = new ArrayList<>();
-                  threadOpts.add("All (" + cpuCores + " Threads)");
-                  for (int t = 1; t <= cpuCores; t++) {
-                      threadOpts.add(t + (t == 1 ? " Thread (Safe)" : " Threads"));
-                  }
-                  setDarkSpinner(spThreads, threadOpts.toArray(new String[0]));
-
-                  setDarkSpinner(spScale, new String[]{
-                      "100% (Original)",
-                      "75% Scale",
-                      "50% Scale",
-                      "Max 2560px (2K)",
-                      "Max 1920px (FHD)",
-                      "Max 1280px (HD)"
-                  });
-
-                  setDarkSpinner(spSpeed, new String[]{
-                      "6 - Balanced (Default)",
-                      "8 - Fast",
-                      "4 - High Quality",
-                      "2 - Ultra Compression"
-                  });
-              }
-
-              private void setDarkSpinner(Spinner spinner, String[] items) {
-                  ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items) {
-                      @Override
-                      public View getView(int position, View convertView, ViewGroup parent) {
-                          TextView tv = (TextView) super.getView(position, convertView, parent);
-                          tv.setTextColor(Color.parseColor("#F8FAFC"));
-                          tv.setTextSize(12f);
-                          tv.setPadding(24, 12, 24, 12);
-                          return tv;
-                      }
-
-                      @Override
-                      public View getDropDownView(int position, View convertView, ViewGroup parent) {
-                          TextView tv = (TextView) super.getDropDownView(position, convertView, parent);
-                          tv.setBackgroundColor(Color.parseColor("#1E293B"));
-                          tv.setTextColor(Color.parseColor("#F8FAFC"));
-                          tv.setTextSize(13f);
-                          tv.setPadding(28, 24, 28, 24);
-                          return tv;
-                      }
-                  };
-                  spinner.setAdapter(adapter);
-              }
-
-              private void setupListeners() {
-                  sbQuality.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                      @Override
-                      public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                          int q = Math.max(10, progress);
-                          tvQualityLabel.setText("Quality: " + q + "%");
-                          int estSavings = Math.max(15, Math.min(92, 100 - (int) (q * 0.52)));
-                          tvEstSize.setText("Est. Savings: ~" + estSavings + "%");
-                      }
-
-                      @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-                      @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-                  });
-
-                  findViewById(R.id.btnPreset49).setOnClickListener(v -> sbQuality.setProgress(49));
-                  findViewById(R.id.btnPreset68).setOnClickListener(v -> sbQuality.setProgress(68));
-                  findViewById(R.id.btnPreset82).setOnClickListener(v -> sbQuality.setProgress(82));
-                  findViewById(R.id.btnPreset95).setOnClickListener(v -> sbQuality.setProgress(95));
-
-                  btnPickImages.setOnClickListener(v -> {
-                      Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                      intent.addCategory(Intent.CATEGORY_OPENABLE);
-                      intent.setType("image/*");
-                      intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-                      pickerLauncher.launch(intent);
-                  });
-
-                  btnConvert.setOnClickListener(v -> startBatchConversion());
-
-                  btnStop.setOnClickListener(v -> {
-                      stopRequested.set(true);
-                      appendLog("[STOP] Membatalkan sisa antrean...");
-                  });
-
-                  btnClear.setOnClickListener(v -> {
-                      if (isRunning.get()) return;
-                      queue.clear();
-                      progressBar.setProgress(0);
-                      btnExportZip.setEnabled(false);
-                      refreshQueueUI();
-                      appendLog("Antrean dibersihkan.");
-                  });
-
-                  btnExportZip.setOnClickListener(v -> exportCompletedAsZip());
-              }
-
-              private boolean addUriToQueue(Uri uri) {
-                  if (uri == null) return false;
-                  String name = "image_" + System.currentTimeMillis() + ".jpg";
-                  long size = 0;
-                  try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
-                      if (cursor != null && cursor.moveToFirst()) {
-                          int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                          int sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE);
-                          if (nameIdx >= 0) name = cursor.getString(nameIdx);
-                          if (sizeIdx >= 0) size = cursor.getLong(sizeIdx);
-                      }
-                  } catch (Exception ignored) {}
-                  queue.add(new QueueItem(uri, name, size));
-                  return true;
-              }
-
-              private int getSelectedThreadCount() {
-                  int pos = spThreads.getSelectedItemPosition();
-                  if (pos <= 0) return cpuCores;
-                  return Math.min(cpuCores, pos);
-              }
-
-              private void startBatchConversion() {
-                  if (isRunning.get()) return;
-                  if (queue.isEmpty()) {
-                      Toast.makeText(this, "Pilih gambar terlebih dahulu", Toast.LENGTH_SHORT).show();
-                      return;
-                  }
-
-                  isRunning.set(true);
-                  stopRequested.set(false);
-                  progressBar.setProgress(0);
-                  setControlsEnabled(false);
-
-                  final int threads = getSelectedThreadCount();
-                  final int quality = Math.max(10, sbQuality.getProgress());
-                  final int formatIdx = spFormat.getSelectedItemPosition();
-                  final int scaleIdx = spScale.getSelectedItemPosition();
-
-                  appendLog("[START] Memproses " + queue.size() + " file • Threads: " + threads + " • Q=" + quality);
-
-                  ExecutorService pool = Executors.newFixedThreadPool(threads);
-                  final AtomicInteger doneCount = new AtomicInteger(0);
-                  final int total = queue.size();
-
-                  for (QueueItem item : queue) {
-                      item.status = "Waiting...";
-                      pool.submit(() -> {
-                          if (stopRequested.get()) {
-                              item.status = "Cancelled";
-                              int completed = doneCount.incrementAndGet();
-                              uiHandler.post(() -> {
-                                  progressBar.setProgress((completed * 100) / Math.max(1, total));
-                                  refreshQueueUI();
-                                  if (completed >= total) {
-                                      finishBatch(pool);
-                                  }
-                              });
-                              return;
-                          }
-                          activeWorkers.incrementAndGet();
-                          item.status = "Encoding...";
-                          uiHandler.post(this::refreshQueueUI);
-
-                          try {
-                              processSingleItem(item, formatIdx, quality, scaleIdx);
-                          } catch (Throwable t) {
-                              Throwable cause = (t instanceof InvocationTargetException && t.getCause() != null)
-                                  ? t.getCause() : t;
-                              String msg = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
-                              item.status = "Error: " + msg;
-                              uiHandler.post(() -> appendLog("[ERR] " + item.originalName + ": " + msg));
-                          } finally {
-                              activeWorkers.decrementAndGet();
-                              int completed = doneCount.incrementAndGet();
-                              uiHandler.post(() -> {
-                                  progressBar.setProgress((completed * 100) / Math.max(1, total));
-                                  refreshQueueUI();
-                                  if (completed >= total) {
-                                      finishBatch(pool);
-                                  }
-                              });
-                          }
-                      });
-                  }
-                  pool.shutdown();
-              }
-
-              private void finishBatch(ExecutorService pool) {
-                  isRunning.set(false);
-                  setControlsEnabled(true);
-                  boolean hasSuccess = false;
-                  for (QueueItem item : queue) {
-                      if (item.encodedData != null && item.encodedData.length > 0) {
-                          hasSuccess = true;
-                          break;
-                      }
-                  }
-                  btnExportZip.setEnabled(hasSuccess);
-                  appendLog("[DONE] Batch selesai.");
-              }
-
-              private void processSingleItem(QueueItem item, int formatIdx, int quality, int scaleIdx) throws Exception {
-                  Bitmap bmp = decodeSafeBitmap(item.uri);
-                  if (bmp == null) throw new IllegalStateException("Gagal decode gambar");
-
-                  bmp = applyScale(bmp, scaleIdx);
-
-                  byte[] outBytes;
-                  String ext;
-                  String mime;
-
-                  if (formatIdx == 0) {
-                      outBytes = encodeNativeCompat(bmp, quality, true);
-                      ext = ".avif";
-                      mime = "image/avif";
-                  } else if (formatIdx == 1) {
-                      outBytes = encodeNativeCompat(bmp, quality, false);
-                      ext = ".heic";
-                      mime = "image/heic";
-                  } else if (formatIdx == 2) {
-                      ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                      Bitmap.CompressFormat webpFmt = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                          ? Bitmap.CompressFormat.WEBP_LOSSY
-                          : Bitmap.CompressFormat.WEBP;
-                      bmp.compress(webpFmt, quality, baos);
-                      outBytes = baos.toByteArray();
-                      ext = ".webp";
-                      mime = "image/webp";
-                  } else {
-                      Bitmap flat = Bitmap.createBitmap(bmp.getWidth(), bmp.getHeight(), Bitmap.Config.ARGB_8888);
-                      Canvas c = new Canvas(flat);
-                      c.drawColor(Color.WHITE);
-                      c.drawBitmap(bmp, 0, 0, null);
-                      if (flat != bmp) bmp.recycle();
-                      bmp = flat;
-
-                      ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                      bmp.compress(Bitmap.CompressFormat.JPEG, quality, baos);
-                      outBytes = baos.toByteArray();
-                      ext = ".jpg";
-                      mime = "image/jpeg";
-                  }
-
-                  bmp.recycle();
-
-                  String baseName = item.originalName.replaceFirst("\\.[^.]+$", "");
-                  item.outputName = baseName + ext;
-                  item.outputBytes = outBytes.length;
-                  item.encodedData = outBytes;
-
-                  saveToPictures(item.outputName, mime, outBytes);
-
-                  long savedPct = item.inputBytes > 0
-                      ? Math.round((1.0 - ((double) item.outputBytes / item.inputBytes)) * 100.0)
-                      : 0;
-                  item.status = "OK • " + formatBytes(item.outputBytes) + " (" + (savedPct >= 0 ? "-" + savedPct : "+" + Math.abs(savedPct)) + "%)";
-                  uiHandler.post(() -> appendLog("[OK] " + item.outputName + " -> " + formatBytes(item.outputBytes)));
-              }
-
-              private Object createHeifCoder() throws Exception {
-                  Class<?> cls = HeifCoder.class;
-                  try {
-                      return cls.getDeclaredConstructor(Context.class).newInstance(this);
-                  } catch (NoSuchMethodException ignored) {
-                      return cls.getDeclaredConstructor().newInstance();
-                  }
-              }
-
-              private byte[] encodeNativeCompat(Bitmap bmp, int quality, boolean isAvif) throws Exception {
-                  Object coder = createHeifCoder();
-                  String methodName = isAvif ? "encodeAvif" : "encodeHeic";
-                  Method[] methods = coder.getClass().getMethods();
-
-                  for (Method m : methods) {
-                      if (m.getName().equals(methodName)) {
-                          Class<?>[] pts = m.getParameterTypes();
-                          if (pts.length == 2 && pts[0] == Bitmap.class && pts[1] == int.class) {
-                              return (byte[]) m.invoke(coder, bmp, quality);
-                          }
-                      }
-                  }
-                  for (Method m : methods) {
-                      if (m.getName().equals(methodName)) {
-                          Class<?>[] pts = m.getParameterTypes();
-                          if (pts.length == 1 && pts[0] == Bitmap.class) {
-                              return (byte[]) m.invoke(coder, bmp);
-                          }
-                      }
-                  }
-                  for (Method m : methods) {
-                      if (m.getName().equals(methodName + "$default")) {
-                          Class<?>[] pts = m.getParameterTypes();
-                          if (pts.length >= 4 && pts[1] == Bitmap.class) {
-                              Object[] args = new Object[pts.length];
-                              args[0] = coder;
-                              args[1] = bmp;
-                              int mask = 0;
-                              int paramCount = pts.length - 3;
-                              for (int i = 1; i < paramCount; i++) {
-                                  int argIdx = i + 1;
-                                  if (i == 1 && (pts[argIdx] == int.class || pts[argIdx] == Integer.class)) {
-                                      args[argIdx] = quality;
-                                  } else {
-                                      mask |= (1 << i);
-                                      if (pts[argIdx] == int.class) args[argIdx] = 0;
-                                      else if (pts[argIdx] == boolean.class) args[argIdx] = false;
-                                      else if (pts[argIdx] == float.class) args[argIdx] = 0f;
-                                      else if (pts[argIdx] == double.class) args[argIdx] = 0d;
-                                      else if (pts[argIdx] == long.class) args[argIdx] = 0L;
-                                      else args[argIdx] = null;
-                                  }
-                              }
-                              args[pts.length - 2] = mask;
-                              args[pts.length - 1] = null;
-                              return (byte[]) m.invoke(null, args);
-                          }
-                      }
-                  }
-                  throw new NoSuchMethodException("Method " + methodName + " tidak ditemukan di HeifCoder");
-              }
-
-              private Bitmap decodeSafeBitmap(Uri uri) throws Exception {
-                  BitmapFactory.Options bounds = new BitmapFactory.Options();
-                  bounds.inJustDecodeBounds = true;
-                  try (InputStream is = getContentResolver().openInputStream(uri)) {
-                      BitmapFactory.decodeStream(is, null, bounds);
-                  }
-
-                  int sampleSize = 1;
-                  int maxDim = Math.max(bounds.outWidth, bounds.outHeight);
-                  while (maxDim / sampleSize > 4096) {
-                      sampleSize *= 2;
-                  }
-
-                  BitmapFactory.Options opts = new BitmapFactory.Options();
-                  opts.inSampleSize = sampleSize;
-                  opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
-                  Bitmap bmp;
-                  try (InputStream is = getContentResolver().openInputStream(uri)) {
-                      bmp = BitmapFactory.decodeStream(is, null, opts);
-                  }
-                  if (bmp == null) return null;
-
-                  int rotation = 0;
-                  try (InputStream is = getContentResolver().openInputStream(uri)) {
-                      if (is != null) {
-                          ExifInterface exif = new ExifInterface(is);
-                          int orient = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-                          if (orient == ExifInterface.ORIENTATION_ROTATE_90) rotation = 90;
-                          else if (orient == ExifInterface.ORIENTATION_ROTATE_180) rotation = 180;
-                          else if (orient == ExifInterface.ORIENTATION_ROTATE_270) rotation = 270;
-                      }
-                  } catch (Exception ignored) {}
-
-                  if (rotation != 0) {
-                      Matrix m = new Matrix();
-                      m.postRotate(rotation);
-                      Bitmap rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.getWidth(), bmp.getHeight(), m, true);
-                      if (rotated != bmp) bmp.recycle();
-                      bmp = rotated;
-                  }
-                  return bmp;
-              }
-
-              private Bitmap applyScale(Bitmap src, int scaleIdx) {
-                  int w = src.getWidth();
-                  int h = src.getHeight();
-                  int targetW = w;
-                  int targetH = h;
-
-                  if (scaleIdx == 1) {
-                      targetW = (int) (w * 0.75f);
-                      targetH = (int) (h * 0.75f);
-                  } else if (scaleIdx == 2) {
-                      targetW = (int) (w * 0.50f);
-                      targetH = (int) (h * 0.50f);
-                  } else if (scaleIdx == 3 && Math.max(w, h) > 2560) {
-                      float ratio = 2560f / Math.max(w, h);
-                      targetW = Math.round(w * ratio);
-                      targetH = Math.round(h * ratio);
-                  } else if (scaleIdx == 4 && Math.max(w, h) > 1920) {
-                      float ratio = 1920f / Math.max(w, h);
-                      targetW = Math.round(w * ratio);
-                      targetH = Math.round(h * ratio);
-                  } else if (scaleIdx == 5 && Math.max(w, h) > 1280) {
-                      float ratio = 1280f / Math.max(w, h);
-                      targetW = Math.round(w * ratio);
-                      targetH = Math.round(h * ratio);
-                  }
-
-                  targetW = Math.max(2, (targetW / 2) * 2);
-                  targetH = Math.max(2, (targetH / 2) * 2);
-
-                  if (targetW == w && targetH == h) return src;
-                  Bitmap scaled = Bitmap.createScaledBitmap(src, targetW, targetH, true);
-                  if (scaled != src) src.recycle();
-                  return scaled;
-              }
-
-              private void saveToPictures(String fileName, String mime, byte[] data) throws Exception {
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      ContentValues values = new ContentValues();
-                      values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
-                      values.put(MediaStore.MediaColumns.MIME_TYPE, mime);
-                      values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HyperbitAVIF");
-                      Uri itemUri;
-                      try {
-                          itemUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-                      } catch (IllegalArgumentException ignored) {
-                          values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/HyperbitAVIF");
-                          itemUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                      }
-                      if (itemUri == null) {
-                          throw new IllegalStateException("Gagal membuat entry MediaStore");
-                      }
-                      try (OutputStream os = getContentResolver().openOutputStream(itemUri)) {
-                          if (os == null) throw new IllegalStateException("OutputStream null");
-                          os.write(data);
-                      }
-                  } else {
-                      File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "HyperbitAVIF");
-                      if (!dir.exists()) dir.mkdirs();
-                      File outFile = new File(dir, fileName);
-                      try (FileOutputStream fos = new FileOutputStream(outFile)) {
-                          fos.write(data);
-                      }
-                  }
-              }
-
-              private void exportCompletedAsZip() {
-                  try {
-                      String zipName = "HyperbitAVIF_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".zip";
-                      ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                      Set<String> usedNames = new HashSet<>();
-                      try (ZipOutputStream zos = new ZipOutputStream(baos)) {
-                          for (QueueItem item : queue) {
-                              if (item.encodedData != null && item.encodedData.length > 0) {
-                                  String entryName = item.outputName;
-                                  int idx = 1;
-                                  while (usedNames.contains(entryName)) {
-                                      entryName = idx + "_" + item.outputName;
-                                      idx++;
-                                  }
-                                  usedNames.add(entryName);
-                                  zos.putNextEntry(new ZipEntry(entryName));
-                                  zos.write(item.encodedData);
-                                  zos.closeEntry();
-                              }
-                          }
-                      }
-                      byte[] zipBytes = baos.toByteArray();
-
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                          ContentValues values = new ContentValues();
-                          values.put(MediaStore.MediaColumns.DISPLAY_NAME, zipName);
-                          values.put(MediaStore.MediaColumns.MIME_TYPE, "application/zip");
-                          values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-                          Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                          if (uri != null) {
-                              try (OutputStream os = getContentResolver().openOutputStream(uri)) {
-                                  if (os != null) os.write(zipBytes);
-                              }
-                          }
-                      } else {
-                          File dl = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                          try (FileOutputStream fos = new FileOutputStream(new File(dl, zipName))) {
-                              fos.write(zipBytes);
-                          }
-                      }
-                      appendLog("[ZIP] Tersimpan ke Downloads/" + zipName);
-                      Toast.makeText(this, "ZIP tersimpan di Downloads/" + zipName, Toast.LENGTH_LONG).show();
-                  } catch (Exception e) {
-                      appendLog("[ERR ZIP] " + e.getMessage());
-                  }
-              }
-
-              private void setControlsEnabled(boolean enabled) {
-                  btnPickImages.setEnabled(enabled);
-                  btnConvert.setEnabled(enabled);
-                  btnClear.setEnabled(enabled);
-                  spFormat.setEnabled(enabled);
-                  spThreads.setEnabled(enabled);
-                  spScale.setEnabled(enabled);
-                  spSpeed.setEnabled(enabled);
-                  sbQuality.setEnabled(enabled);
-                  btnStop.setEnabled(!enabled);
-              }
-
-              private void refreshQueueUI() {
-                  long totalIn = 0;
-                  for (QueueItem q : queue) totalIn += q.inputBytes;
-                  tvQueueSummary.setText("Antrean: " + queue.size() + " file • Total Input: " + formatBytes(totalIn));
-
-                  queueContainer.removeAllViews();
-                  for (QueueItem item : queue) {
-                      LinearLayout row = new LinearLayout(this);
-                      row.setOrientation(LinearLayout.VERTICAL);
-                      row.setPadding(16, 12, 16, 12);
-                      LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                      lp.topMargin = 8;
-                      row.setLayoutParams(lp);
-                      row.setBackgroundColor(Color.parseColor("#0F172A"));
-
-                      TextView tvName = new TextView(this);
-                      tvName.setText(item.originalName + " (" + formatBytes(item.inputBytes) + ")");
-                      tvName.setTextColor(Color.parseColor("#F1F5F9"));
-                      tvName.setTextSize(12f);
-
-                      TextView tvSt = new TextView(this);
-                      tvSt.setText(item.status);
-                      tvSt.setTextSize(11f);
-                      if (item.status.startsWith("OK")) {
-                          tvSt.setTextColor(Color.parseColor("#34D399"));
-                      } else if (item.status.startsWith("Error")) {
-                          tvSt.setTextColor(Color.parseColor("#F87171"));
-                      } else {
-                          tvSt.setTextColor(Color.parseColor("#93C5FD"));
-                      }
-
-                      row.addView(tvName);
-                      row.addView(tvSt);
-                      queueContainer.addView(row);
-                  }
-              }
-
-              private void startTelemetryLoop() {
-                  lastCpuTimeMs = Process.getElapsedCpuTime();
-                  lastWallTimeMs = SystemClock.elapsedRealtime();
-
-                  uiHandler.postDelayed(new Runnable() {
-                      @Override
-                      public void run() {
-                          long nowCpu = Process.getElapsedCpuTime();
-                          long nowWall = SystemClock.elapsedRealtime();
-                          long dCpu = Math.max(0, nowCpu - lastCpuTimeMs);
-                          long dWall = Math.max(1, nowWall - lastWallTimeMs);
-                          lastCpuTimeMs = nowCpu;
-                          lastWallTimeMs = nowWall;
-
-                          float cpuPct = Math.min(100f, (dCpu * 100f) / (dWall * cpuCores));
-                          int workers = activeWorkers.get();
-                          if (workers > 0 && cpuPct < 10f) {
-                              cpuPct = Math.min(100f, (workers * 100f) / cpuCores);
-                          }
-                          cpuGraphView.pushSample(cpuPct);
-                          tvCpuStats.setText(String.format(Locale.US, "CPU Load: %.0f%% • Active Workers: %d/%d",
-                              cpuPct, workers, getSelectedThreadCount()));
-
-                          ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
-                          ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
-                          if (am != null) {
-                              am.getMemoryInfo(mi);
-                              long usedMb = (mi.totalMem - mi.availMem) / (1024 * 1024);
-                              long totalMb = mi.totalMem / (1024 * 1024);
-                              tvRamStats.setText("RAM: " + usedMb + " / " + totalMb + " MB");
-                          }
-
-                          uiHandler.postDelayed(this, 650);
-                      }
-                  }, 650);
-              }
-
-              private void appendLog(String msg) {
-                  String current = tvLog.getText().toString();
-                  String[] lines = current.split("\n");
-                  StringBuilder sb = new StringBuilder();
-                  int start = Math.max(0, lines.length - 14);
-                  for (int i = start; i < lines.length; i++) {
-                      sb.append(lines[i]).append("\n");
-                  }
-                  sb.append(msg);
-                  tvLog.setText(sb.toString());
-              }
-
-              private String formatBytes(long bytes) {
-                  if (bytes < 1024) return bytes + " B";
-                  double kb = bytes / 1024.0;
-                  if (kb < 1024) return String.format(Locale.US, "%.1f KB", kb);
-                  return String.format(Locale.US, "%.2f MB", kb / 1024.0);
-              }
-          }
-          EOF
-
-      - name: Build & Sign Release APK
-        run: gradle assembleRelease --no-daemon --stacktrace
-
-      - name: Prepare Final APK Artifact
+      - name: Generate Launcher Icon (Custom or Default HB)
         run: |
-          mkdir -p release-output
-          cp app/build/outputs/apk/release/app-release.apk release-output/Hyperbit-AVIF.apk
-          ls -lh release-output/Hyperbit-AVIF.apk
+          python3 - << 'PYEOF'
+          import base64, os
+          b64 = "__CUSTOM_ICON_BASE64__"
+          out_path = "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
+          if b64 != "__CUSTOM_ICON_BASE64__" and len(b64) > 64:
+              with open(out_path, "wb") as f:
+                  f.write(base64.b64decode(b64))
+          else:
+              # Minimal crisp 256x256 PNG generator using zlib/struct (no extra pip deps)
+              import zlib, struct
+              w, h = 256, 256
+              raw = bytearray()
+              for y in range(h):
+                  raw.append(0)
+                  for x in range(w):
+                      t = (x + y) / (w + h)
+                      r = int(79 * (1 - t) + 16 * t)
+                      g = int(70 * (1 - t) + 185 * t)
+                      b = int(229 * (1 - t) + 129 * t)
+                      raw.extend([r, g, b, 255])
+              def chunk(tag, data):
+                  return struct.pack("!I", len(data)) + tag + data + struct.pack("!I", zlib.crc32(tag + data) & 0xffffffff)
+              png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b"")
+              with open(out_path, "wb") as f:
+                  f.write(png)
+          PYEOF
 
-      - name: Upload Hyperbit-AVIF.apk
+      - name: Generate 1-to-1 Kotlin Engine, Integrity Guard & UI Source
+        run: |
+          cat << 'EOF' > app/src/main/java/id/hyperbit/avif/Models.kt
+          package id.hyperbit.avif
+
+          import android.graphics.Bitmap
+          import android.net.Uri
+          import kotlinx.coroutines.Job
+          import java.util.Locale
+
+          data class CropRect(
+              val sx: Int,
+              val sy: Int,
+              val sw: Int,
+              val sh: Int,
+              val dw: Int,
+              val dh: Int
+          )
+
+          data class QueueItem(
+              val id: String,
+              val sourceUri: Uri,
+              val origName: String,
+              var baseName: String,
+              val origExt: String,
+              val category: String,
+              val origSize: Long,
+              val origWidth: Int,
+              val origHeight: Int,
+              val thumbnail: Bitmap?,
+              var status: String = "ready",
+              var statusDetail: String = "",
+              var progress: Int = 0,
+              var estimateText: String = "",
+              var estimateSmaller: Boolean = true,
+              var outputUri: Uri? = null,
+              var outputFilePath: String = "",
+              var outputDisplayName: String = "",
+              var resultSize: Long = 0L,
+              var resultWidth: Int = 0,
+              var resultHeight: Int = 0,
+              var elapsedSec: Double = 0.0,
+              var job: Job? = null,
+              var activeProcess: Process? = null
+          ) {
+              fun metaText(): String {
+                  val mp = (origWidth * origHeight) / 1_000_000.0
+                  return String.format(Locale.US, "%s  |  %s  |  %dx%dpx (%.1f MP)",
+                      origExt, AppHelpers.formatBytes(origSize), origWidth, origHeight, mp)
+              }
+
+              fun statusText(): String {
+                  return when (status) {
+                      "processing" -> "Memproses... $progress%"
+                      "done" -> {
+                          val diff = if (origSize > 0) (((resultSize.toDouble() - origSize) / origSize) * 100.0) else 0.0
+                          val sign = if (diff <= 0) String.format(Locale.US, "%.0f%%", diff) else String.format(Locale.US, "+%.0f%%", diff)
+                          String.format(Locale.US, "Selesai: %s (%s) | %dx%dpx | %.2f dtk",
+                              AppHelpers.formatBytes(resultSize), sign, resultWidth, resultHeight, elapsedSec)
+                      }
+                      "stopped" -> "Dihentikan Pengguna"
+                      "error" -> "Gagal: ${statusDetail.ifEmpty { "Error" }}"
+                      else -> "Siap Dikonversi"
+                  }
+              }
+          }
+
+          object AppHelpers {
+              fun formatBytes(bytes: Long): String {
+                  if (bytes <= 0L) return "0 B"
+                  val units = arrayOf("B", "KB", "MB", "GB")
+                  var idx = 0
+                  var v = bytes.toDouble()
+                  while (v >= 1024.0 && idx < units.size - 1) {
+                      v /= 1024.0
+                      idx++
+                  }
+                  return String.format(Locale.US, "%.2f %s", v, units[idx])
+              }
+
+              fun isSupportedImageName(name: String): Boolean {
+                  val lower = name.lowercase(Locale.US)
+                  return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
+                         lower.endsWith(".webp") || lower.endsWith(".heic") || lower.endsWith(".heif") ||
+                         lower.endsWith(".bmp") || lower.endsWith(".gif") || lower.endsWith(".ico")
+              }
+
+              fun getSourceCategory(ext: String): String {
+                  return when (ext.uppercase(Locale.US).trimStart('.')) {
+                      "JPG", "JPEG" -> "JPG"
+                      "PNG" -> "PNG"
+                      "WEBP" -> "WEBP"
+                      "HEIC", "HEIF" -> "HEIC"
+                      else -> "OTHER"
+                  }
+              }
+
+              fun calculateCropAndSize(
+                  origW: Int, origH: Int, modeIdx: Int, maxPx: Int,
+                  ratioIdx: Int, scalePct: Int, custW: Int, custH: Int, lockAspect: Boolean
+              ): CropRect {
+                  val w = maxOf(1, origW)
+                  val h = maxOf(1, origH)
+                  if (modeIdx == 1) return CropRect(0, 0, w, h, w, h)
+                  if (modeIdx == 2) {
+                      val f = maxOf(1, scalePct) / 100.0
+                      return CropRect(0, 0, w, h, maxOf(1, Math.round(w * f).toInt()), maxOf(1, Math.round(h * f).toInt()))
+                  }
+                  if (modeIdx == 3) {
+                      val dw = maxOf(10, custW)
+                      val dh = if (lockAspect) maxOf(1, Math.round(dw / (w.toDouble() / h)).toInt()) else maxOf(10, custH)
+                      return CropRect(0, 0, w, h, dw, dh)
+                  }
+                  val targetRatio = when (ratioIdx) {
+                      1 -> 16.0 / 9.0
+                      2 -> 9.0 / 16.0
+                      3 -> 4.0 / 3.0
+                      4 -> 1.0
+                      else -> 0.0
+                  }
+                  var sx = 0
+                  var sy = 0
+                  var sw = w
+                  var sh = h
+                  if (targetRatio > 0.0) {
+                      val srcRatio = w.toDouble() / h
+                      if (srcRatio > targetRatio) {
+                          sw = Math.round(h * targetRatio).toInt()
+                          sx = (w - sw) / 2
+                      } else if (srcRatio < targetRatio) {
+                          sh = Math.round(w / targetRatio).toInt()
+                          sy = (h - sh) / 2
+                      }
+                  }
+                  val longest = maxOf(sw, sh)
+                  val scale = if (longest > maxPx) (maxPx.toDouble() / longest) else 1.0
+                  val dw = maxOf(1, Math.round(sw * scale).toInt())
+                  val dh = maxOf(1, Math.round(sh * scale).toInt())
+                  return CropRect(sx, sy, sw, sh, dw, dh)
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/id/hyperbit/avif/ImageEngine.kt
+          package id.hyperbit.avif
+
+          import android.content.ContentValues
+          import android.content.Context
+          import android.graphics.*
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Environment
+          import android.provider.MediaStore
+          import androidx.documentfile.provider.DocumentFile
+          import androidx.exifinterface.media.ExifInterface
+          import java.io.File
+          import java.io.FileInputStream
+          import java.io.FileOutputStream
+          import java.util.Locale
+          import java.util.UUID
+
+          class ImageEngine(private val context: Context) {
+              val avifEncPath: String
+              val avifDecPath: String
+
+              init {
+                  val nativeDir = context.applicationInfo.nativeLibraryDir
+                  val enc = File(nativeDir, "libavifenc.so")
+                  val dec = File(nativeDir, "libavifdec.so")
+                  avifEncPath = if (enc.exists()) enc.absolutePath else ""
+                  avifDecPath = if (dec.exists()) dec.absolutePath else ""
+              }
+
+              fun decodeNormalizedBitmap(uri: Uri): Bitmap {
+                  val ext = getExtensionFromUri(uri).lowercase(Locale.US)
+                  if (ext == "avif" && avifDecPath.isNotEmpty()) {
+                      val tmpIn = File(context.cacheDir, "dec_in_${UUID.randomUUID()}.avif")
+                      val tmpPng = File(context.cacheDir, "dec_out_${UUID.randomUUID()}.png")
+                      try {
+                          context.contentResolver.openInputStream(uri)?.use { input ->
+                              FileOutputStream(tmpIn).use { output -> input.copyTo(output) }
+                          }
+                          val pb = ProcessBuilder(avifDecPath, tmpIn.absolutePath, tmpPng.absolutePath)
+                          pb.redirectErrorStream(true)
+                          val p = pb.start()
+                          p.waitFor()
+                          if (tmpPng.exists()) {
+                              return BitmapFactory.decodeFile(tmpPng.absolutePath)
+                                  ?: throw IllegalStateException("Gagal mendekode AVIF")
+                          }
+                      } finally {
+                          tmpIn.delete()
+                          tmpPng.delete()
+                      }
+                  }
+
+                  var orientation = ExifInterface.ORIENTATION_NORMAL
+                  context.contentResolver.openInputStream(uri)?.use { exifStream ->
+                      try {
+                          val exif = ExifInterface(exifStream)
+                          orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                      } catch (_: Exception) {}
+                  }
+
+                  val raw = context.contentResolver.openInputStream(uri)?.use {
+                      BitmapFactory.decodeStream(it)
+                  } ?: throw IllegalStateException("File gambar tidak dapat dibaca")
+
+                  return applyExifRotation(raw, orientation)
+              }
+
+              fun decodeFileNormalized(file: File): Bitmap {
+                  return decodeNormalizedBitmap(Uri.fromFile(file))
+              }
+
+              private fun getExtensionFromUri(uri: Uri): String {
+                  val path = uri.lastPathSegment ?: ""
+                  val dot = path.lastIndexOf('.')
+                  return if (dot >= 0) path.substring(dot + 1) else ""
+              }
+
+              private fun applyExifRotation(bmp: Bitmap, orientation: Int): Bitmap {
+                  val m = Matrix()
+                  when (orientation) {
+                      ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.setScale(-1f, 1f)
+                      ExifInterface.ORIENTATION_ROTATE_180 -> m.setRotate(180f)
+                      ExifInterface.ORIENTATION_FLIP_VERTICAL -> { m.setRotate(180f); m.postScale(-1f, 1f) }
+                      ExifInterface.ORIENTATION_TRANSPOSE -> { m.setRotate(90f); m.postScale(-1f, 1f) }
+                      ExifInterface.ORIENTATION_ROTATE_90 -> m.setRotate(90f)
+                      ExifInterface.ORIENTATION_TRANSVERSE -> { m.setRotate(270f); m.postScale(-1f, 1f) }
+                      ExifInterface.ORIENTATION_ROTATE_270 -> m.setRotate(270f)
+                      else -> return bmp
+                  }
+                  val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+                  if (rotated != bmp) bmp.recycle()
+                  return rotated
+              }
+
+              fun prepareCroppedBitmap(src: Bitmap, crop: CropRect, preserveAlpha: Boolean, bgIdx: Int): Bitmap {
+                  var current = src
+                  if (crop.sx > 0 || crop.sy > 0 || crop.sw != current.width || crop.sh != current.height) {
+                      current = Bitmap.createBitmap(current, crop.sx, crop.sy, crop.sw, crop.sh)
+                  }
+                  if (crop.dw != current.width || crop.dh != current.height) {
+                      current = Bitmap.createScaledBitmap(current, crop.dw, crop.dh, true)
+                  }
+                  val out = Bitmap.createBitmap(crop.dw, crop.dh, Bitmap.Config.ARGB_8888)
+                  val canvas = Canvas(out)
+                  if (!preserveAlpha) {
+                      val bgColor = when (bgIdx) {
+                          1 -> Color.BLACK
+                          2 -> Color.parseColor("#0F172A")
+                          else -> Color.WHITE
+                      }
+                      canvas.drawColor(bgColor)
+                  }
+                  val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+                  canvas.drawBitmap(current, 0f, 0f, paint)
+                  return out
+              }
+
+              fun applyUnsharpMask(bmp: Bitmap, amount: Double) {
+                  val w = bmp.width
+                  val h = bmp.height
+                  if (w < 3 || h < 3 || amount <= 0.0) return
+                  val src = IntArray(w * h)
+                  val dst = IntArray(w * h)
+                  bmp.getPixels(src, 0, w, 0, 0, w, h)
+                  System.arraycopy(src, 0, dst, 0, src.size)
+
+                  for (y in 1 until h - 1) {
+                      val row = y * w
+                      for (x in 1 until w - 1) {
+                          val idx = row + x
+                          val c00 = src[(y - 1) * w + (x - 1)]
+                          val c01 = src[(y - 1) * w + x]
+                          val c02 = src[(y - 1) * w + (x + 1)]
+                          val c10 = src[row + (x - 1)]
+                          val c11 = src[idx]
+                          val c12 = src[row + (x + 1)]
+                          val c20 = src[(y + 1) * w + (x - 1)]
+                          val c21 = src[(y + 1) * w + x]
+                          val c22 = src[(y + 1) * w + (x + 1)]
+
+                          val a = (c11 ushr 24) and 0xFF
+                          val r = sharpenChannel(c00, c01, c02, c10, c11, c12, c20, c21, c22, 16, amount)
+                          val g = sharpenChannel(c00, c01, c02, c10, c11, c12, c20, c21, c22, 8, amount)
+                          val b = sharpenChannel(c00, c01, c02, c10, c11, c12, c20, c21, c22, 0, amount)
+                          dst[idx] = (a shl 24) or (r shl 16) or (g shl 8) or b
+                      }
+                  }
+                  bmp.setPixels(dst, 0, w, 0, 0, w, h)
+              }
+
+              private fun sharpenChannel(
+                  c00: Int, c01: Int, c02: Int,
+                  c10: Int, c11: Int, c12: Int,
+                  c20: Int, c21: Int, c22: Int,
+                  shift: Int, amount: Double
+              ): Int {
+                  val tl = (c00 ushr shift) and 0xFF
+                  val tc = (c01 ushr shift) and 0xFF
+                  val tr = (c02 ushr shift) and 0xFF
+                  val ml = (c10 ushr shift) and 0xFF
+                  val mc = (c11 ushr shift) and 0xFF
+                  val mr = (c12 ushr shift) and 0xFF
+                  val bl = (c20 ushr shift) and 0xFF
+                  val bc = (c21 ushr shift) and 0xFF
+                  val br = (c22 ushr shift) and 0xFF
+                  val blur = (tl + 2 * tc + tr + 2 * ml + 4 * mc + 2 * mr + bl + 2 * bc + br) * 0.0625
+                  val v = Math.round(mc + amount * (mc - blur)).toInt()
+                  return v.coerceIn(0, 255)
+              }
+
+              fun measureBottomBandBlackRatio(bmp: Bitmap, bottomFraction: Double): Double {
+                  val w = bmp.width
+                  val h = bmp.height
+                  if (w <= 0 || h <= 0) return 0.0
+                  val bandH = maxOf(4, Math.round(h * bottomFraction).toInt())
+                  val startY = maxOf(0, h - bandH)
+                  val rows = h - startY
+                  val buf = IntArray(w * rows)
+                  bmp.getPixels(buf, 0, w, 0, startY, w, rows)
+                  var sampled = 0L
+                  var pureBlack = 0L
+                  val stepX = maxOf(1, w / 256)
+                  for (y in 0 until rows) {
+                      val rowOff = y * w
+                      var x = 0
+                      while (x < w) {
+                          val px = buf[rowOff + x]
+                          val a = (px ushr 24) and 0xFF
+                          val r = (px ushr 16) and 0xFF
+                          val g = (px ushr 8) and 0xFF
+                          val b = px and 0xFF
+                          sampled++
+                          if (a > 16 && r <= 3 && g <= 3 && b <= 3) {
+                              pureBlack++
+                          }
+                          x += stepX
+                      }
+                  }
+                  return if (sampled > 0) pureBlack.toDouble() / sampled else 0.0
+              }
+
+              fun verifyOutputIntegrity(refCropped: Bitmap, outFile: File, expectedW: Int, expectedH: Int): String? {
+                  if (!outFile.exists() || outFile.length() < 64L) {
+                      return "File output tidak valid (0 byte / korup)."
+                  }
+                  val decoded = try {
+                      decodeFileNormalized(outFile)
+                  } catch (e: Exception) {
+                      return "Stream output korup saat verifikasi: ${e.message}"
+                  }
+                  if (Math.abs(decoded.width - expectedW) > 2 || Math.abs(decoded.height - expectedH) > 2) {
+                      return "Dimensi hasil tidak sesuai (${decoded.width}x${decoded.height} vs ${expectedW}x${expectedH})."
+                  }
+                  val outB15 = measureBottomBandBlackRatio(decoded, 0.15)
+                  if (outB15 >= 0.96 && measureBottomBandBlackRatio(refCropped, 0.15) < 0.80) {
+                      return "Bagian bawah gambar hasil terdeteksi hitam/korup."
+                  }
+                  val outB5 = measureBottomBandBlackRatio(decoded, 0.05)
+                  if (outB5 >= 0.98 && measureBottomBandBlackRatio(refCropped, 0.05) < 0.75) {
+                      return "Tepi bawah gambar hasil terdeteksi hitam/korup."
+                  }
+                  return null
+              }
+
+              fun saveToFinalDestination(
+                  tempOutFile: File,
+                  desiredBaseName: String,
+                  outExt: String,
+                  mimeType: String,
+                  customTreeUri: Uri?
+              ): Pair<Uri, String> {
+                  val cleanBase = desiredBaseName.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "image" }
+                  if (customTreeUri != null) {
+                      val dir = DocumentFile.fromTreeUri(context, customTreeUri)
+                      if (dir != null && dir.canWrite()) {
+                          var finalName = "$cleanBase.$outExt"
+                          var idx = 1
+                          while (dir.findFile(finalName) != null) {
+                              finalName = "$cleanBase ($idx).$outExt"
+                              idx++
+                          }
+                          val doc = dir.createFile(mimeType, finalName)
+                              ?: throw IllegalStateException("Gagal membuat file di folder output SAF.")
+                          context.contentResolver.openOutputStream(doc.uri)?.use { out ->
+                              FileInputStream(tempOutFile).use { inp -> inp.copyTo(out) }
+                          }
+                          return Pair(doc.uri, finalName)
+                      }
+                  }
+
+                  val finalName = "${cleanBase}_${System.currentTimeMillis() % 10000}.$outExt"
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                      val values = ContentValues().apply {
+                          put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
+                          put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                          put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HyperbitAVIF")
+                      }
+                      val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                          ?: throw IllegalStateException("Gagal menyimpan ke MediaStore Pictures/HyperbitAVIF")
+                      context.contentResolver.openOutputStream(uri)?.use { out ->
+                          FileInputStream(tempOutFile).use { inp -> inp.copyTo(out) }
+                      }
+                      return Pair(uri, finalName)
+                  } else {
+                      val pubDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "HyperbitAVIF")
+                      pubDir.mkdirs()
+                      val dest = File(pubDir, finalName)
+                      tempOutFile.copyTo(dest, overwrite = true)
+                      return Pair(Uri.fromFile(dest), finalName)
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/id/hyperbit/avif/MainActivity.kt
+          package id.hyperbit.avif
+
+          import android.app.ActivityManager
+          import android.app.Dialog
+          import android.content.ClipboardManager
+          import android.content.ClipData
+          import android.content.Context
+          import android.content.Intent
+          import android.graphics.*
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.OpenableColumns
+          import android.text.Editable
+          import android.text.InputType
+          import android.text.TextWatcher
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.*
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.content.FileProvider
+          import androidx.documentfile.provider.DocumentFile
+          import kotlinx.coroutines.*
+          import kotlinx.coroutines.sync.Semaphore
+          import kotlinx.coroutines.sync.withPermit
+          import java.io.File
+          import java.io.FileOutputStream
+          import java.io.RandomAccessFile
+          import java.text.SimpleDateFormat
+          import java.util.*
+          import java.util.concurrent.atomic.AtomicInteger
+
+          class MainActivity : AppCompatActivity() {
+
+              private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+              private lateinit var engine: ImageEngine
+              private val items = mutableListOf<QueueItem>()
+              private var customOutputTreeUri: Uri? = null
+              private val activeWorkers = AtomicInteger(0)
+
+              // UI Controls (1:1 parity with Windows)
+              private lateinit var engineBadgeText: TextView
+              private lateinit var outputFolderText: TextView
+              private lateinit var targetFormatSpinner: Spinner
+              private lateinit var autoConvertCheck: CheckBox
+              private lateinit var qualitySeekBar: SeekBar
+              private lateinit var qualityValText: TextView
+              private lateinit var trueLosslessCheck: CheckBox
+              private lateinit var yuvSpinner: Spinner
+              private lateinit var cpuEffortCheck: CheckBox
+              private lateinit var cpuEffortSpinner: Spinner
+              private lateinit var cpuThreadsSpinner: Spinner
+              private lateinit var visualTuneSpinner: Spinner
+              private lateinit var unsharpSpinner: Spinner
+              private lateinit var sourceFilterSpinner: Spinner
+              private lateinit var resModeSpinner: Spinner
+              private lateinit var maxPixelEdit: EditText
+              private lateinit var aspectRatioSpinner: Spinner
+              private lateinit var scalePercentEdit: EditText
+              private lateinit var customWEdit: EditText
+              private lateinit var customHEdit: EditText
+              private lateinit var lockAspectCheck: CheckBox
+              private lateinit var preserveAlphaCheck: CheckBox
+              private lateinit var bgColorSpinner: Spinner
+              private lateinit var deleteOriginalCheck: CheckBox
+              private lateinit var queueHeaderText: TextView
+              private lateinit var totalProgressBar: ProgressBar
+              private lateinit var totalProgressText: TextView
+              private lateinit var queueContainer: LinearLayout
+              private lateinit var cpuSummaryText: TextView
+              private lateinit var cpuSparkContainer: LinearLayout
+              private lateinit var ramMonitorText: TextView
+              private lateinit var ramProgressBar: ProgressBar
+              private lateinit var logTextView: TextView
+
+              private val logLines = mutableListOf<String>()
+              private val monitorHandler = Handler(Looper.getMainLooper())
+              private var prevCoreTotals = LongArray(0)
+              private var prevCoreIdles = LongArray(0)
+              private val coreSparkBars = mutableListOf<ProgressBar>()
+              private val corePctTexts = mutableListOf<TextView>()
+
+              private val pickFilesLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+                  if (!uris.isNullOrEmpty()) enqueueUris(uris)
+              }
+
+              private val pickInputFolderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
+                  if (treeUri != null) scanFolderTreeAsync(treeUri)
+              }
+
+              private val pickOutputFolderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
+                  if (treeUri != null) {
+                      contentResolver.takePersistableUriPermission(
+                          treeUri,
+                          Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                      )
+                      customOutputTreeUri = treeUri
+                      outputFolderText.text = "Folder Output Khusus: ${treeUri.lastPathSegment ?: treeUri}"
+                      appendLog("Folder output khusus dipilih: $treeUri", "INFO")
+                  }
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  engine = ImageEngine(this)
+                  buildUi()
+                  initSystemMonitor()
+
+                  val engineStatus = if (engine.avifEncPath.isNotEmpty()) "Engines: AVIF (NDK) + WEBP + JPG/PNG Ready"
+                  else "Engines: Android Native WEBP/JPG/PNG Ready"
+                  engineBadgeText.text = engineStatus
+                  appendLog("Hyperbit AVIF Android (1:1 Port Stable 2.4.0) siap | Cores: ${Runtime.getRuntime().availableProcessors()}", "INFO")
+                  appendLog("Output Integrity Guard (Anti-Black-Bottom) & Strict CPU Thread Budget aktif.", "INFO")
+
+                  handleIncomingShareIntent(intent)
+              }
+
+              override fun onNewIntent(intent: Intent?) {
+                  super.onNewIntent(intent)
+                  if (intent != null) handleIncomingShareIntent(intent)
+              }
+
+              private fun handleIncomingShareIntent(intent: Intent) {
+                  when (intent.action) {
+                      Intent.ACTION_SEND -> {
+                          val uri = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                          else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                          if (uri != null) enqueueUris(listOf(uri))
+                      }
+                      Intent.ACTION_SEND_MULTIPLE -> {
+                          val list = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                          else @Suppress("DEPRECATION") intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+                          if (!list.isNullOrEmpty()) enqueueUris(list)
+                      }
+                  }
+              }
+
+              private fun buildUi() {
+                  val rootScroll = ScrollView(this).apply {
+                      setBackgroundColor(Color.parseColor("#020617"))
+                  }
+                  val mainCol = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(14), dp(14), dp(14), dp(24))
+                  }
+
+                  // 1. HEADER CARD
+                  val headerCard = cardBox("#0F172A", "#1E293B")
+                  val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                  val titleTxt = TextView(this).apply {
+                      text = "Hyperbit AVIF — Android Native (1:1)"
+                      textSize = 17f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.WHITE)
+                  }
+                  titleRow.addView(titleTxt)
+                  headerCard.addView(titleRow)
+
+                  engineBadgeText = TextView(this).apply {
+                      textSize = 11f
+                      typeface = Typeface.MONOSPACE
+                      setTextColor(Color.parseColor("#6EE7B7"))
+                      setPadding(0, dp(4), 0, dp(8))
+                  }
+                  headerCard.addView(engineBadgeText)
+
+                  val topActionRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  topActionRow.addView(actionBtn("+ Pilih File", "#4F46E5", "#FFFFFF") {
+                      pickFilesLauncher.launch(arrayOf("image/*"))
+                  })
+                  topActionRow.addView(spaceW(8))
+                  topActionRow.addView(actionBtn("+ Pilih Folder", "#1E293B", "#E2E8F0") {
+                      pickInputFolderLauncher.launch(null)
+                  })
+                  topActionRow.addView(spaceW(8))
+                  topActionRow.addView(actionBtn("Folder Output", "#1E293B", "#38BDF8") {
+                      pickOutputFolderLauncher.launch(null)
+                  })
+                  headerCard.addView(topActionRow)
+
+                  outputFolderText = TextView(this).apply {
+                      text = "Output Default: Pictures/HyperbitAVIF (MediaStore Native)"
+                      textSize = 11f
+                      typeface = Typeface.MONOSPACE
+                      setTextColor(Color.parseColor("#6EE7B7"))
+                      setPadding(0, dp(8), 0, 0)
+                  }
+                  headerCard.addView(outputFolderText)
+                  mainCol.addView(headerCard)
+                  mainCol.addView(spaceH(12))
+
+                  // 2. ENCODING & RESOLUTION SETTINGS CARD (1:1 WITH WINDOWS)
+                  val setCard = cardBox("#0F172A", "#1E293B")
+                  setCard.addView(sectionTitle("Pengaturan Encoding & Resolusi (1:1 Windows)"))
+
+                  autoConvertCheck = CheckBox(this).apply {
+                      text = "Auto-Convert Saat Upload"
+                      setTextColor(Color.parseColor("#CBD5E1"))
+                      textSize = 12f
+                  }
+                  setCard.addView(autoConvertCheck)
+
+                  setCard.addView(fieldLabel("Format Output Target:"))
+                  targetFormatSpinner = darkSpinner(listOf(
+                      "AVIF (libavif NDK Native)",
+                      "WEBP (Android Native)",
+                      "JPG / JPEG",
+                      "PNG"
+                  ))
+                  targetFormatSpinner.onItemSelectedListener = simpleSelectListener { updateAllEstimates() }
+                  setCard.addView(targetFormatSpinner)
+
+                  val qRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
+                  qRow.addView(fieldLabel("Quality (0 - 100):").apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
+                  qualityValText = TextView(this).apply {
+                      text = "82 / 100"
+                      typeface = Typeface.MONOSPACE
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.parseColor("#818CF8"))
+                  }
+                  qRow.addView(qualityValText)
+                  setCard.addView(qRow)
+
+                  qualitySeekBar = SeekBar(this).apply {
+                      max = 100
+                      progress = 82
+                      setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                          override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                              qualityValText.text = "$p / 100"
+                              if (p > 60) unsharpSpinner.setSelection(0)
+                              else if (p >= 49) unsharpSpinner.setSelection(1)
+                              else unsharpSpinner.setSelection(2)
+                              updateAllEstimates()
+                          }
+                          override fun onStartTrackingTouch(sb: SeekBar?) {}
+                          override fun onStopTrackingTouch(sb: SeekBar?) {}
+                      })
+                  }
+                  setCard.addView(qualitySeekBar)
+
+                  val presetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, dp(6)) }
+                  for (p in listOf(49, 50, 68, 82, 95)) {
+                      val label = if (p == 49) "Ekstrem 49" else p.toString()
+                      presetRow.addView(actionBtn(label, "#1E293B", "#CBD5E1") {
+                          qualitySeekBar.progress = p
+                      })
+                      presetRow.addView(spaceW(6))
+                  }
+                  setCard.addView(presetRow)
+
+                  trueLosslessCheck = CheckBox(this).apply {
+                      text = "True Lossless (100% Piksel Identik RGB)"
+                      setTextColor(Color.parseColor("#E2E8F0"))
+                      textSize = 12f
+                      setOnCheckedChangeListener { _, _ -> updateAllEstimates() }
+                  }
+                  setCard.addView(trueLosslessCheck)
+
+                  setCard.addView(fieldLabel("Chroma Subsampling (YUV):"))
+                  yuvSpinner = darkSpinner(listOf(
+                      "YUV 4:2:0 - Default (Ukuran terkecil)",
+                      "YUV 4:2:2 - Ketajaman warna menengah",
+                      "YUV 4:4:4 - Teks kecil, UI & grafik tajam"
+                  ))
+                  yuvSpinner.onItemSelectedListener = simpleSelectListener { updateAllEstimates() }
+                  setCard.addView(yuvSpinner)
+
+                  cpuEffortCheck = CheckBox(this).apply {
+                      text = "Aktifkan CPU Effort (Speed):"
+                      setTextColor(Color.parseColor("#CBD5E1"))
+                      textSize = 12f
+                      setOnCheckedChangeListener { _, checked ->
+                          cpuEffortSpinner.isEnabled = checked
+                          updateAllEstimates()
+                      }
+                  }
+                  setCard.addView(cpuEffortCheck)
+
+                  cpuEffortSpinner = darkSpinner(listOf(
+                      "Effort 0 (Speed 10 - Tercepat)",
+                      "Effort 1 (Speed 9)",
+                      "Effort 2 (Speed 8)",
+                      "Effort 3 (Speed 7)",
+                      "Effort 4 (Speed 6 - Standar)",
+                      "Effort 5 (Speed 5)",
+                      "Effort 6 (Speed 4 - Optimal Default)",
+                      "Effort 7 (Speed 3)",
+                      "Effort 8 (Speed 2)",
+                      "Effort 9 (Speed 1)",
+                      "Effort 10 (Speed 0 - Terpadat)"
+                  )).apply {
+                      setSelection(6)
+                      isEnabled = false
+                  }
+                  setCard.addView(cpuEffortSpinner)
+
+                  setCard.addView(fieldLabel("CPU Threads (--jobs):"))
+                  val maxCores = maxOf(1, Runtime.getRuntime().availableProcessors())
+                  val threadItems = mutableListOf("All ($maxCores Threads - Maksimal)")
+                  for (t in maxCores - 1 downTo 1) {
+                      threadItems.add(if (t == 1) "1 Thread (Single Core)" else "$t Threads")
+                  }
+                  cpuThreadsSpinner = darkSpinner(threadItems).apply {
+                      if (maxCores > 1) setSelection(1)
+                  }
+                  setCard.addView(cpuThreadsSpinner)
+
+                  setCard.addView(fieldLabel("Visual Tuning (Sensor Mata):"))
+                  visualTuneSpinner = darkSpinner(listOf(
+                      "IQ - Image Quality (Default Terbaru)",
+                      "SSIM - Struktur Visual",
+                      "PSNR - Matematika Murni"
+                  ))
+                  setCard.addView(visualTuneSpinner)
+
+                  setCard.addView(fieldLabel("Micro-Sharpening:"))
+                  unsharpSpinner = darkSpinner(listOf(
+                      "Off (File Paling Kecil)",
+                      "20% (Halus)",
+                      "35% (Optimal Studio)",
+                      "60% (Ekstra Tajam)"
+                  ))
+                  unsharpSpinner.onItemSelectedListener = simpleSelectListener { updateAllEstimates() }
+                  setCard.addView(unsharpSpinner)
+
+                  setCard.addView(fieldLabel("Filter Ekstensi Input:"))
+                  sourceFilterSpinner = darkSpinner(listOf(
+                      "SEMUA EKSTENSI", "JPG / JPEG", "PNG", "WEBP", "HEIC / HEIF", "OTHER"
+                  ))
+                  sourceFilterSpinner.onItemSelectedListener = simpleSelectListener { refreshQueueViews() }
+                  setCard.addView(sourceFilterSpinner)
+
+                  setCard.addView(fieldLabel("Mode Resolusi:"))
+                  resModeSpinner = darkSpinner(listOf(
+                      "Piksel & Rasio (Default)",
+                      "Asli (100% Native)",
+                      "% Skala (%)",
+                      "Kustom (Lebar x Tinggi)"
+                  ))
+                  resModeSpinner.onItemSelectedListener = simpleSelectListener { updateAllEstimates() }
+                  setCard.addView(resModeSpinner)
+
+                  setCard.addView(fieldLabel("Piksel Maks (Sisi Terpanjang):"))
+                  maxPixelEdit = darkEditText("850") { updateAllEstimates() }
+                  setCard.addView(maxPixelEdit)
+
+                  val pxScroll = HorizontalScrollView(this)
+                  val pxRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, dp(4)) }
+                  val pxVals = listOf(640, 850, 1080, 1280, 1920, 4000, 6000)
+                  val pxNames = listOf("640px", "850px", "1080px", "1280px", "1920px", "12MP", "24MP")
+                  for (i in pxVals.indices) {
+                      val v = pxVals[i]
+                      pxRow.addView(actionBtn(pxNames[i], "#1E293B", "#CBD5E1") {
+                          resModeSpinner.setSelection(0)
+                          maxPixelEdit.setText(v.toString())
+                          updateAllEstimates()
+                      })
+                      pxRow.addView(spaceW(5))
+                  }
+                  pxScroll.addView(pxRow)
+                  setCard.addView(pxScroll)
+
+                  setCard.addView(fieldLabel("Rasio Aspek Otomatis:"))
+                  aspectRatioSpinner = darkSpinner(listOf(
+                      "Rasio Asli (Proporsional)",
+                      "16:9 (Widescreen)",
+                      "9:16 (Story / Reels)",
+                      "4:3 (Standar Foto)",
+                      "1:1 (Square)"
+                  ))
+                  aspectRatioSpinner.onItemSelectedListener = simpleSelectListener { updateAllEstimates() }
+                  setCard.addView(aspectRatioSpinner)
+
+                  val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, 0) }
+                  scalePercentEdit = darkEditText("100") { updateAllEstimates() }.apply {
+                      hint = "Skala %"
+                      layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                  }
+                  customWEdit = darkEditText("1200") { updateAllEstimates() }.apply {
+                      hint = "W"
+                      layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                  }
+                  customHEdit = darkEditText("800") { updateAllEstimates() }.apply {
+                      hint = "H"
+                      layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                  }
+                  customRow.addView(scalePercentEdit)
+                  customRow.addView(spaceW(6))
+                  customRow.addView(customWEdit)
+                  customRow.addView(spaceW(6))
+                  customRow.addView(customHEdit)
+                  setCard.addView(customRow)
+
+                  lockAspectCheck = CheckBox(this).apply {
+                      text = "Kunci Rasio pada Kustom WxH"
+                      isChecked = true
+                      setTextColor(Color.parseColor("#A5B4FC"))
+                      textSize = 12f
+                      setOnCheckedChangeListener { _, _ -> updateAllEstimates() }
+                  }
+                  setCard.addView(lockAspectCheck)
+
+                  preserveAlphaCheck = CheckBox(this).apply {
+                      text = "Pertahankan Alpha (Transparansi)"
+                      isChecked = true
+                      setTextColor(Color.parseColor("#E2E8F0"))
+                      textSize = 12f
+                      setOnCheckedChangeListener { _, _ -> updateAllEstimates() }
+                  }
+                  setCard.addView(preserveAlphaCheck)
+
+                  bgColorSpinner = darkSpinner(listOf(
+                      "Latar Non-Alpha: Putih (#FFFFFF)",
+                      "Latar Non-Alpha: Hitam (#000000)",
+                      "Latar Non-Alpha: Slate (#0F172A)"
+                  ))
+                  setCard.addView(bgColorSpinner)
+
+                  deleteOriginalCheck = CheckBox(this).apply {
+                      text = "Hapus file asli setelah konversi terverifikasi"
+                      isChecked = false
+                      setTextColor(Color.parseColor("#FDA4AF"))
+                      textSize = 12f
+                  }
+                  setCard.addView(deleteOriginalCheck)
+
+                  mainCol.addView(setCard)
+                  mainCol.addView(spaceH(12))
+
+                  // 3. QUEUE TOOLBAR & ITEMS CARD
+                  val qCard = cardBox("#0F172A", "#1E293B")
+                  queueHeaderText = sectionTitle("Antrean Konversi & Hasil (0 file)")
+                  qCard.addView(queueHeaderText)
+
+                  val progRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, dp(8)) }
+                  totalProgressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                      max = 100
+                      progress = 0
+                      layoutParams = LinearLayout.LayoutParams(0, dp(8), 1f)
+                  }
+                  totalProgressText = TextView(this).apply {
+                      text = "0%"
+                      typeface = Typeface.MONOSPACE
+                      setTextColor(Color.parseColor("#94A3B8"))
+                      setPadding(dp(8), 0, 0, 0)
+                  }
+                  progRow.addView(totalProgressBar)
+                  progRow.addView(totalProgressText)
+                  qCard.addView(progRow)
+
+                  val batchBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, dp(8)) }
+                  batchBtns.addView(actionBtn("> Proses Semua", "#059669", "#FFFFFF") {
+                      startAllItems(false)
+                  })
+                  batchBtns.addView(spaceW(6))
+                  batchBtns.addView(actionBtn("Proses Ulang", "#4F46E5", "#FFFFFF") {
+                      startAllItems(true)
+                  })
+                  batchBtns.addView(spaceW(6))
+                  batchBtns.addView(actionBtn("Export .ZIP", "#7C3AED", "#FFFFFF") {
+                      exportAllToZip()
+                  })
+                  batchBtns.addView(spaceW(6))
+                  batchBtns.addView(actionBtn("Hapus", "#1E293B", "#FB7185") {
+                      items.forEach { it.job?.cancel() }
+                      items.clear()
+                      refreshQueueViews()
+                      updateQueueSummary()
+                  })
+                  qCard.addView(batchBtns)
+
+                  queueContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  qCard.addView(queueContainer)
+                  mainCol.addView(qCard)
+                  mainCol.addView(spaceH(12))
+
+                  // 4. REAL-TIME PER-CORE CPU & RAM MONITOR
+                  val monCard = cardBox("#0F172A", "#1E293B")
+                  val cores = maxOf(1, Runtime.getRuntime().availableProcessors())
+                  monCard.addView(sectionTitle("Monitor CPU Per-Thread Real-Time ($cores Cores) & RAM"))
+                  cpuSummaryText = TextView(this).apply {
+                      text = "Total CPU: 0% | Idle (0 Active Workers)"
+                      typeface = Typeface.MONOSPACE
+                      textSize = 11.5f
+                      setTextColor(Color.parseColor("#34D399"))
+                  }
+                  monCard.addView(cpuSummaryText)
+
+                  cpuSparkContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(0, dp(6), 0, dp(8))
+                  }
+                  for (c in 0 until cores) {
+                      val slot = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                          setPadding(dp(2), 0, dp(2), 0)
+                      }
+                      val pctTxt = TextView(this).apply {
+                          text = "C$c\n0%"
+                          textSize = 9.5f
+                          typeface = Typeface.MONOSPACE
+                          gravity = Gravity.CENTER
+                          setTextColor(Color.parseColor("#94A3B8"))
+                      }
+                      val pb = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                          max = 100
+                          progress = 0
+                      }
+                      slot.addView(pctTxt)
+                      slot.addView(pb)
+                      cpuSparkContainer.addView(slot)
+                      corePctTexts.add(pctTxt)
+                      coreSparkBars.add(pb)
+                  }
+                  monCard.addView(cpuSparkContainer)
+
+                  ramMonitorText = TextView(this).apply {
+                      text = "RAM Sistem: Memeriksa..."
+                      typeface = Typeface.MONOSPACE
+                      textSize = 11f
+                      setTextColor(Color.parseColor("#CBD5E1"))
+                  }
+                  ramProgressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                      max = 100
+                      progress = 0
+                  }
+                  monCard.addView(ramMonitorText)
+                  monCard.addView(ramProgressBar)
+                  mainCol.addView(monCard)
+                  mainCol.addView(spaceH(12))
+
+                  // 5. DIAGNOSTIC LOG
+                  val logCard = cardBox("#020617", "#1E293B")
+                  val logHdr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                  logHdr.addView(sectionTitle(">_ Log Diagnostik Engine").apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
+                  logHdr.addView(actionBtn("Salin Log", "#1E293B", "#CBD5E1") {
+                      val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                      cm.setPrimaryClip(ClipData.newPlainText("HyperbitLog", logLines.joinToString("\n")))
+                      appendLog("Log disalin ke clipboard.", "INFO")
+                  })
+                  logCard.addView(logHdr)
+
+                  logTextView = TextView(this).apply {
+                      typeface = Typeface.MONOSPACE
+                      textSize = 10.5f
+                      setTextColor(Color.parseColor("#CBD5E1"))
+                      setPadding(0, dp(6), 0, 0)
+                  }
+                  logCard.addView(logTextView)
+                  mainCol.addView(logCard)
+
+                  rootScroll.addView(mainCol)
+                  setContentView(rootScroll)
+              }
+
+              private fun scanFolderTreeAsync(treeUri: Uri) {
+                  appendLog("Memindai folder secara async di latar belakang...", "INFO")
+                  scope.launch(Dispatchers.IO) {
+                      val found = mutableListOf<Uri>()
+                      val stack = ArrayDeque<DocumentFile>()
+                      DocumentFile.fromTreeUri(this@MainActivity, treeUri)?.let { stack.add(it) }
+                      while (stack.isNotEmpty()) {
+                          val dir = stack.removeLast()
+                          for (child in dir.listFiles()) {
+                              if (child.isDirectory) {
+                                  stack.add(child)
+                              } else if (child.isFile) {
+                                  val n = child.name ?: ""
+                                  if (AppHelpers.isSupportedImageName(n)) found.add(child.uri)
+                              }
+                          }
+                      }
+                      withContext(Dispatchers.Main) {
+                          if (found.isEmpty()) appendLog("Tidak ada gambar valid ditemukan di folder tersebut.", "WARN")
+                          else enqueueUris(found)
+                      }
+                  }
+              }
+
+              private fun enqueueUris(uris: List<Uri>) {
+                  val autoStart = autoConvertCheck.isChecked
+                  scope.launch(Dispatchers.IO) {
+                      val added = mutableListOf<QueueItem>()
+                      for (uri in uris) {
+                          try {
+                              val name = resolveFileName(uri)
+                              val size = resolveFileSize(uri)
+                              val ext = name.substringAfterLast('.', "JPG").uppercase(Locale.US)
+                              val base = name.substringBeforeLast('.', name)
+                              val bmp = engine.decodeNormalizedBitmap(uri)
+                              val scale = minOf(1.0, 96.0 / maxOf(1, maxOf(bmp.width, bmp.height)))
+                              val thumb = Bitmap.createScaledBitmap(
+                                  bmp,
+                                  maxOf(1, (bmp.width * scale).toInt()),
+                                  maxOf(1, (bmp.height * scale).toInt()),
+                                  true
+                              )
+                              val item = QueueItem(
+                                  id = UUID.randomUUID().toString(),
+                                  sourceUri = uri,
+                                  origName = name,
+                                  baseName = base,
+                                  origExt = ext,
+                                  category = AppHelpers.getSourceCategory(ext),
+                                  origSize = size,
+                                  origWidth = bmp.width,
+                                  origHeight = bmp.height,
+                                  thumbnail = thumb
+                              )
+                              added.add(item)
+                          } catch (e: Exception) {
+                              withContext(Dispatchers.Main) {
+                                  appendLog("Gagal memuat file: ${e.message}", "ERROR")
+                              }
+                          }
+                      }
+                      withContext(Dispatchers.Main) {
+                          items.addAll(added)
+                          updateAllEstimates()
+                          refreshQueueViews()
+                          updateQueueSummary()
+                          appendLog("Berhasil menambahkan ${added.size} file ke antrean.", "INFO")
+                          if (autoStart && added.isNotEmpty()) processBatch(added)
+                      }
+                  }
+              }
+
+              private fun startAllItems(reprocess: Boolean) {
+                  val targets = items.filter { it.status != "processing" && (reprocess || it.status != "done") }
+                  if (targets.isEmpty()) {
+                      appendLog("Tidak ada item antrean untuk diproses.", "INFO")
+                      return
+                  }
+                  processBatch(targets)
+              }
+
+              private fun processBatch(targets: List<QueueItem>) {
+                  val maxCores = maxOf(1, Runtime.getRuntime().availableProcessors())
+                  val tIdx = cpuThreadsSpinner.selectedItemPosition
+                  val totalBudget = if (tIdx <= 0) maxCores else maxOf(1, maxCores - tIdx)
+                  val maxWorkers = if (targets.size <= 1 || totalBudget < 4) 1 else minOf(targets.size, 2)
+                  val threadsPerWorker = maxOf(1, totalBudget / maxWorkers)
+
+                  val sem = Semaphore(maxWorkers)
+                  for (item in targets) {
+                      item.job = scope.launch(Dispatchers.IO) {
+                          sem.withPermit {
+                              convertSingleItem(item, threadsPerWorker)
+                          }
+                      }
+                  }
+              }
+
+              private suspend fun convertSingleItem(item: QueueItem, allocatedThreads: Int) {
+                  withContext(Dispatchers.Main) {
+                      item.status = "processing"
+                      item.progress = 15
+                      refreshQueueViews()
+                  }
+                  activeWorkers.incrementAndGet()
+                  val startNs = System.nanoTime()
+                  val stagePng = File(cacheDir, "hb_stage_${UUID.randomUUID()}.png")
+                  val tempOut = File(cacheDir, "hb_out_${UUID.randomUUID()}")
+
+                  try {
+                      val fmtIdx = targetFormatSpinner.selectedItemPosition
+                      val quality = qualitySeekBar.progress
+                      val lossless = trueLosslessCheck.isChecked
+                      val yuvIdx = yuvSpinner.selectedItemPosition
+                      val useEffort = cpuEffortCheck.isChecked
+                      val effortVal = cpuEffortSpinner.selectedItemPosition
+                      val tuneIdx = visualTuneSpinner.selectedItemPosition
+                      val sharpIdx = unsharpSpinner.selectedItemPosition
+                      val resModeIdx = resModeSpinner.selectedItemPosition
+                      val maxPx = maxPixelEdit.text.toString().toIntOrNull()?.coerceAtLeast(50) ?: 850
+                      val ratioIdx = aspectRatioSpinner.selectedItemPosition
+                      val scalePct = scalePercentEdit.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 100
+                      val custW = customWEdit.text.toString().toIntOrNull()?.coerceAtLeast(10) ?: 1200
+                      val custH = customHEdit.text.toString().toIntOrNull()?.coerceAtLeast(10) ?: 800
+                      val lockAspect = lockAspectCheck.isChecked
+                      val preserveAlpha = preserveAlphaCheck.isChecked
+                      val bgIdx = bgColorSpinner.selectedItemPosition
+                      val deleteOrig = deleteOriginalCheck.isChecked
+
+                      val decoded = engine.decodeNormalizedBitmap(item.sourceUri)
+                      val crop = AppHelpers.calculateCropAndSize(
+                          decoded.width, decoded.height, resModeIdx, maxPx, ratioIdx, scalePct, custW, custH, lockAspect
+                      )
+                      val outExt = when (fmtIdx) {
+                          0 -> "avif"
+                          1 -> "webp"
+                          2 -> "jpg"
+                          else -> "png"
+                      }
+                      val mimeType = when (outExt) {
+                          "avif" -> "image/avif"
+                          "webp" -> "image/webp"
+                          "jpg" -> "image/jpeg"
+                          else -> "image/png"
+                      }
+
+                      val prepared = engine.prepareCroppedBitmap(decoded, crop, preserveAlpha && outExt != "jpg", bgIdx)
+                      val sharpAmount = when (sharpIdx) { 1 -> 0.20; 2 -> 0.35; 3 -> 0.60; else -> 0.0 }
+                      if (sharpAmount > 0.0) engine.applyUnsharpMask(prepared, sharpAmount)
+
+                      withContext(Dispatchers.Main) { item.progress = 55; refreshQueueViews() }
+
+                      val finalTempFile = File("${tempOut.absolutePath}.$outExt")
+                      when (outExt) {
+                          "avif" -> {
+                              if (engine.avifEncPath.isEmpty()) throw IllegalStateException("Engine libavifenc.so tidak ditemukan.")
+                              FileOutputStream(stagePng).use { prepared.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                              val speed = if (useEffort) (10 - effortVal).coerceIn(0, 10) else 4
+                              val yuvArg = when (yuvIdx) { 1 -> "422"; 2 -> "444"; else -> "420" }
+                              val tuneArg = when (tuneIdx) { 2 -> "psnr"; 1 -> "ssim"; else -> "iq" }
+                              val cmd = mutableListOf(
+                                  engine.avifEncPath,
+                                  "-j", allocatedThreads.toString(),
+                                  "--speed", speed.toString()
+                              )
+                              if (lossless) {
+                                  cmd.add("--lossless")
+                              } else {
+                                  cmd.addAll(listOf("--yuv", yuvArg, "-q", quality.toString(), "--qalpha", quality.toString(), "-a", "tune=$tuneArg"))
+                              }
+                              cmd.addAll(listOf(stagePng.absolutePath, finalTempFile.absolutePath))
+                              val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
+                              item.activeProcess = proc
+                              val logOut = proc.inputStream.bufferedReader().readText()
+                              val code = proc.waitFor()
+                              item.activeProcess = null
+                              if (code != 0 || !finalTempFile.exists()) {
+                                  throw IllegalStateException("avifenc gagal ($code): $logOut")
+                              }
+                          }
+                          "webp" -> {
+                              FileOutputStream(finalTempFile).use {
+                                  val fmt = if (Build.VERSION.SDK_INT >= 30) {
+                                      if (lossless) Bitmap.CompressFormat.WEBP_LOSSLESS else Bitmap.CompressFormat.WEBP_LOSSY
+                                  } else {
+                                      @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP
+                                  }
+                                  prepared.compress(fmt, if (lossless) 100 else quality, it)
+                              }
+                          }
+                          "jpg" -> {
+                              FileOutputStream(finalTempFile).use {
+                                  prepared.compress(Bitmap.CompressFormat.JPEG, quality, it)
+                              }
+                          }
+                          else -> {
+                              FileOutputStream(finalTempFile).use {
+                                  prepared.compress(Bitmap.CompressFormat.PNG, 100, it)
+                              }
+                          }
+                      }
+
+                      withContext(Dispatchers.Main) { item.progress = 88; refreshQueueViews() }
+
+                      // Output Integrity Guard (Anti-Black-Bottom)
+                      val verifyErr = engine.verifyOutputIntegrity(prepared, finalTempFile, crop.dw, crop.dh)
+                      if (verifyErr != null) {
+                          finalTempFile.delete()
+                          throw IllegalStateException("$verifyErr (File asli tetap aman & tidak dihapus).")
+                      }
+
+                      val saved = engine.saveToFinalDestination(finalTempFile, item.baseName, outExt, mimeType, customOutputTreeUri)
+                      val elapsed = (System.nanoTime() - startNs) / 1_000_000_000.0
+                      val outSize = finalTempFile.length()
+                      finalTempFile.delete()
+
+                      var deletedOrig = false
+                      if (deleteOrig) {
+                          try {
+                              val doc = DocumentFile.fromSingleUri(this@MainActivity, item.sourceUri)
+                              if (doc != null && doc.delete()) deletedOrig = true
+                          } catch (_: Exception) {}
+                      }
+
+                      withContext(Dispatchers.Main) {
+                          item.outputUri = saved.first
+                          item.outputDisplayName = saved.second
+                          item.resultSize = outSize
+                          item.resultWidth = crop.dw
+                          item.resultHeight = crop.dh
+                          item.elapsedSec = elapsed
+                          item.progress = 100
+                          item.status = "done"
+                          refreshQueueViews()
+                          updateQueueSummary()
+                          val delStr = if (deletedOrig) " [Asli Dihapus]" else ""
+                          appendLog(String.format(Locale.US, "Selesai & Terverifikasi: %s (%dx%d) | %s -> %s (%.2f dtk)%s",
+                              saved.second, crop.dw, crop.dh, AppHelpers.formatBytes(item.origSize), AppHelpers.formatBytes(outSize), elapsed, delStr), "SUCCESS")
+                      }
+                  } catch (e: CancellationException) {
+                      withContext(Dispatchers.Main) {
+                          item.status = "stopped"
+                          item.progress = 0
+                          refreshQueueViews()
+                          updateQueueSummary()
+                      }
+                  } catch (e: Exception) {
+                      withContext(Dispatchers.Main) {
+                          item.status = "error"
+                          item.statusDetail = e.message ?: "Error"
+                          item.progress = 0
+                          refreshQueueViews()
+                          updateQueueSummary()
+                          appendLog("Error ${item.origName}: ${e.message}", "ERROR")
+                      }
+                  } finally {
+                      activeWorkers.decrementAndGet()
+                      stagePng.delete()
+                  }
+              }
+
+              private fun updateAllEstimates() {
+                  val fmtIdx = targetFormatSpinner.selectedItemPosition
+                  val quality = qualitySeekBar.progress
+                  val lossless = trueLosslessCheck.isChecked
+                  val yuvIdx = yuvSpinner.selectedItemPosition
+                  val resModeIdx = resModeSpinner.selectedItemPosition
+                  val maxPx = maxPixelEdit.text.toString().toIntOrNull()?.coerceAtLeast(50) ?: 850
+                  val ratioIdx = aspectRatioSpinner.selectedItemPosition
+                  val scalePct = scalePercentEdit.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 100
+                  val custW = customWEdit.text.toString().toIntOrNull()?.coerceAtLeast(10) ?: 1200
+                  val custH = customHEdit.text.toString().toIntOrNull()?.coerceAtLeast(10) ?: 800
+                  val lockAspect = lockAspectCheck.isChecked
+
+                  for (it in items) {
+                      val crop = AppHelpers.calculateCropAndSize(it.origWidth, it.origHeight, resModeIdx, maxPx, ratioIdx, scalePct, custW, custH, lockAspect)
+                      val px = maxOf(1.0, crop.dw.toDouble() * crop.dh)
+                      var bpp = when (fmtIdx) {
+                          0 -> if (lossless) 7.5 else 0.08 + 1.85 * Math.pow(quality / 100.0, 2.35)
+                          1 -> if (lossless) 7.2 else 0.12 + 2.35 * Math.pow(quality / 100.0, 2.25)
+                          2 -> 0.22 + 3.40 * Math.pow(quality / 100.0, 2.15)
+                          else -> 8.5
+                      }
+                      if (fmtIdx == 0 && !lossless) {
+                          if (yuvIdx == 1) bpp *= 1.15 else if (yuvIdx == 2) bpp *= 1.32
+                      }
+                      val estBytes = maxOf(512L, Math.round((px * bpp) / 8.0))
+                      val smaller = estBytes <= it.origSize
+                      val pct = if (it.origSize > 0) Math.abs((estBytes - it.origSize).toDouble() / it.origSize) * 100.0 else 0.0
+                      val trend = if (smaller) String.format(Locale.US, "Kemungkinan Lebih Kecil (-%.0f%%)", pct)
+                      else String.format(Locale.US, "Kemungkinan Lebih Besar (+%.0f%%)", pct)
+                      it.estimateText = "~Est. ${AppHelpers.formatBytes(estBytes)} | $trend (${crop.dw}x${crop.dh}px)"
+                      it.estimateSmaller = smaller
+                  }
+                  refreshQueueViews()
+              }
+
+              private fun refreshQueueViews() {
+                  queueContainer.removeAllViews()
+                  val filterCats = listOf("ALL", "JPG", "PNG", "WEBP", "HEIC", "OTHER")
+                  val activeCat = filterCats.getOrElse(sourceFilterSpinner.selectedItemPosition) { "ALL" }
+                  val visible = items.filter { activeCat == "ALL" || it.category == activeCat }
+
+                  for (item in visible) {
+                      val rowCard = cardBox("#020617", "#1E293B")
+                      val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                      val thumbView = ImageView(this).apply {
+                          setImageBitmap(item.thumbnail)
+                          layoutParams = LinearLayout.LayoutParams(dp(52), dp(52))
+                          scaleType = ImageView.ScaleType.CENTER_CROP
+                      }
+                      top.addView(thumbView)
+                      top.addView(spaceW(10))
+
+                      val info = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                      }
+                      val nameEdit = EditText(this).apply {
+                          setText(item.baseName)
+                          setTextColor(Color.WHITE)
+                          textSize = 13f
+                          setTypeface(null, Typeface.BOLD)
+                          addTextChangedListener(object : TextWatcher {
+                              override fun afterTextChanged(s: Editable?) { item.baseName = s?.toString() ?: item.baseName }
+                              override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                              override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                          })
+                      }
+                      info.addView(nameEdit)
+                      info.addView(TextView(this).apply {
+                          text = item.metaText()
+                          textSize = 10.5f
+                          typeface = Typeface.MONOSPACE
+                          setTextColor(Color.parseColor("#94A3B8"))
+                      })
+                      if (item.status != "done" && item.estimateText.isNotEmpty()) {
+                          info.addView(TextView(this).apply {
+                              text = item.estimateText
+                              textSize = 10.5f
+                              typeface = Typeface.MONOSPACE
+                              setTextColor(Color.parseColor(if (item.estimateSmaller) "#38BDF8" else "#FBBF24"))
+                          })
+                      }
+                      info.addView(TextView(this).apply {
+                          text = item.statusText()
+                          textSize = 11f
+                          setTypeface(null, Typeface.BOLD)
+                          setTextColor(Color.parseColor(when (item.status) {
+                              "processing" -> "#818CF8"
+                              "done" -> "#34D399"
+                              "stopped" -> "#FBBF24"
+                              "error" -> "#FB7185"
+                              else -> "#94A3B8"
+                          }))
+                      })
+                      top.addView(info)
+                      rowCard.addView(top)
+
+                      val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, 0) }
+                      if (item.status == "processing") {
+                          btns.addView(actionBtn("Stop", "#E11D48", "#FFFFFF") {
+                              item.job?.cancel()
+                              item.activeProcess?.destroy()
+                          })
+                      } else {
+                          btns.addView(actionBtn("> Konversi", "#4F46E5", "#FFFFFF") {
+                              processBatch(listOf(item))
+                          })
+                      }
+                      if (item.status == "done" && item.outputUri != null) {
+                          btns.addView(spaceW(6))
+                          btns.addView(actionBtn("Bandingkan", "#1E293B", "#A5B4FC") {
+                              showSplitCompareDialog(item)
+                          })
+                          btns.addView(spaceW(6))
+                          btns.addView(actionBtn("Share", "#059669", "#FFFFFF") {
+                              shareOutputUri(item.outputUri!!)
+                          })
+                      }
+                      btns.addView(spaceW(6))
+                      btns.addView(actionBtn("X", "#1E293B", "#FB7185") {
+                          item.job?.cancel()
+                          items.remove(item)
+                          refreshQueueViews()
+                          updateQueueSummary()
+                      })
+                      rowCard.addView(btns)
+                      queueContainer.addView(rowCard)
+                      queueContainer.addView(spaceH(8))
+                  }
+              }
+
+              private fun showSplitCompareDialog(item: QueueItem) {
+                  val outUri = item.outputUri ?: return
+                  scope.launch(Dispatchers.IO) {
+                      try {
+                          val beforeBmp = engine.decodeNormalizedBitmap(item.sourceUri)
+                          val afterBmp = engine.decodeNormalizedBitmap(outUri)
+                          withContext(Dispatchers.Main) {
+                              val dialog = Dialog(this@MainActivity, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+                              val root = LinearLayout(this@MainActivity).apply {
+                                  orientation = LinearLayout.VERTICAL
+                                  setBackgroundColor(Color.parseColor("#020617"))
+                                  setPadding(dp(14), dp(14), dp(14), dp(14))
+                              }
+                              val header = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                              header.addView(TextView(this@MainActivity).apply {
+                                  text = "Bandingkan: Asli (${AppHelpers.formatBytes(item.origSize)}) vs Hasil (${AppHelpers.formatBytes(item.resultSize)})"
+                                  setTextColor(Color.WHITE)
+                                  textSize = 12f
+                                  layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                              })
+                              header.addView(actionBtn("Tutup", "#E11D48", "#FFFFFF") { dialog.dismiss() })
+                              root.addView(header)
+
+                              val splitView = object : View(this@MainActivity) {
+                                  var ratio = 0.5f
+                                  val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+                                  val linePaint = Paint().apply { color = Color.parseColor("#6366F1"); strokeWidth = 6f }
+                                  override fun onTouchEvent(event: MotionEvent): Boolean {
+                                      if (width > 0) {
+                                          ratio = (event.x / width.toFloat()).coerceIn(0f, 1f)
+                                          invalidate()
+                                      }
+                                      return true
+                                  }
+                                  override fun onDraw(canvas: Canvas) {
+                                      super.onDraw(canvas)
+                                      if (width <= 0 || height <= 0) return
+                                      val scale = minOf(width.toFloat() / afterBmp.width, height.toFloat() / afterBmp.height)
+                                      val dw = afterBmp.width * scale
+                                      val dh = afterBmp.height * scale
+                                      val left = (width - dw) / 2f
+                                      val top = (height - dh) / 2f
+                                      val dst = RectF(left, top, left + dw, top + dh)
+                                      canvas.drawBitmap(afterBmp, null, dst, paint)
+                                      val splitX = left + dw * ratio
+                                      canvas.save()
+                                      canvas.clipRect(left, top, splitX, top + dh)
+                                      canvas.drawBitmap(beforeBmp, null, dst, paint)
+                                      canvas.restore()
+                                      canvas.drawLine(splitX, top, splitX, top + dh, linePaint)
+                                  }
+                              }.apply {
+                                  layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+                              }
+                              root.addView(splitView)
+                              dialog.setContentView(root)
+                              dialog.show()
+                          }
+                      } catch (e: Exception) {
+                          withContext(Dispatchers.Main) { appendLog("Gagal membuka Bandingkan: ${e.message}", "ERROR") }
+                      }
+                  }
+              }
+
+              private fun shareOutputUri(uri: Uri) {
+                  val send = Intent(Intent.ACTION_SEND).apply {
+                      type = "image/*"
+                      putExtra(Intent.EXTRA_STREAM, uri)
+                      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                  }
+                  startActivity(Intent.createChooser(send, "Bagikan Hasil Konversi"))
+              }
+
+              private fun exportAllToZip() {
+                  val doneItems = items.filter { it.status == "done" && it.outputUri != null }
+                  if (doneItems.isEmpty()) {
+                      appendLog("Belum ada file selesai untuk diekspor ke .ZIP.", "WARN")
+                      return
+                  }
+                  scope.launch(Dispatchers.IO) {
+                      val zipFile = File(cacheDir, "Hyperbit_AVIF_Batch_${System.currentTimeMillis()}.zip")
+                      java.util.zip.ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
+                          val used = mutableSetOf<String>()
+                          for (it in doneItems) {
+                              var name = it.outputDisplayName.ifEmpty { "${it.baseName}.avif" }
+                              var c = 1
+                              while (used.contains(name)) {
+                                  name = "${name.substringBeforeLast('.')}_$c.${name.substringAfterLast('.')}"
+                                  c++
+                              }
+                              used.add(name)
+                              zos.putNextEntry(java.util.zip.ZipEntry(name))
+                              contentResolver.openInputStream(it.outputUri!!)?.use { inp -> inp.copyTo(zos) }
+                              zos.closeEntry()
+                          }
+                      }
+                      withContext(Dispatchers.Main) {
+                          val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", zipFile)
+                          val share = Intent(Intent.ACTION_SEND).apply {
+                              type = "application/zip"
+                              putExtra(Intent.EXTRA_STREAM, uri)
+                              addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                          }
+                          startActivity(Intent.createChooser(share, "Simpan / Bagikan Arsip .ZIP"))
+                          appendLog("Berhasil mengemas ${doneItems.size} file ke arsip .ZIP.", "SUCCESS")
+                      }
+                  }
+              }
+
+              private fun initSystemMonitor() {
+                  val cores = maxOf(1, Runtime.getRuntime().availableProcessors())
+                  prevCoreTotals = LongArray(cores)
+                  prevCoreIdles = LongArray(cores)
+
+                  val tick = object : Runnable {
+                      override fun run() {
+                          updateCpuAndRam()
+                          monitorHandler.postDelayed(this, 650)
+                      }
+                  }
+                  monitorHandler.post(tick)
+              }
+
+              private fun updateCpuAndRam() {
+                  var sumPct = 0
+                  try {
+                      RandomAccessFile("/proc/stat", "r").use { raf ->
+                          var line: String?
+                          while (raf.readLine().also { line = it } != null) {
+                              val l = line ?: continue
+                              if (l.startsWith("cpu") && l.length > 3 && l[3].isDigit()) {
+                                  val parts = l.trim().split(Regex("\\s+"))
+                                  val idx = parts[0].removePrefix("cpu").toIntOrNull() ?: continue
+                                  if (idx in prevCoreTotals.indices && parts.size >= 5) {
+                                      val user = parts[1].toLong()
+                                      val nice = parts[2].toLong()
+                                      val sys = parts[3].toLong()
+                                      val idle = parts[4].toLong()
+                                      val total = user + nice + sys + idle
+                                      val diffTotal = total - prevCoreTotals[idx]
+                                      val diffIdle = idle - prevCoreIdles[idx]
+                                      val pct = if (diffTotal > 0) (((diffTotal - diffIdle) * 100.0) / diffTotal).toInt().coerceIn(0, 100) else 0
+                                      prevCoreTotals[idx] = total
+                                      prevCoreIdles[idx] = idle
+                                      sumPct += pct
+                                      corePctTexts[idx].text = "C$idx\n$pct%"
+                                      coreSparkBars[idx].progress = pct
+                                  }
+                              }
+                          }
+                      }
+                  } catch (_: Exception) {}
+
+                  val avg = if (prevCoreTotals.isNotEmpty()) sumPct / prevCoreTotals.size else 0
+                  val w = activeWorkers.get()
+                  cpuSummaryText.text = "Total CPU: $avg% | ${if (w > 0) "Aktif ($w Worker Encoding)" else "Idle (0 Active Workers)"}"
+
+                  val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                  val mi = ActivityManager.MemoryInfo()
+                  am.getMemoryInfo(mi)
+                  val totalGb = mi.totalMem / (1024.0 * 1024.0 * 1024.0)
+                  val usedGb = (mi.totalMem - mi.availMem) / (1024.0 * 1024.0 * 1024.0)
+                  val ramPct = if (mi.totalMem > 0) (((mi.totalMem - mi.availMem) * 100.0) / mi.totalMem).toInt() else 0
+                  val appMb = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / (1024.0 * 1024.0)
+                  ramProgressBar.progress = ramPct
+                  ramMonitorText.text = String.format(Locale.US, "Memori App: %.1f MB | RAM Android: %.1f GB / %.1f GB (%d%%)",
+                      appMb, usedGb, totalGb, ramPct)
+              }
+
+              private fun updateQueueSummary() {
+                  queueHeaderText.text = "Antrean Konversi & Hasil (${items.size} file)"
+                  if (items.isEmpty()) {
+                      totalProgressBar.progress = 0
+                      totalProgressText.text = "0%"
+                      return
+                  }
+                  val avg = items.map { if (it.status == "done") 100 else it.progress }.average().toInt()
+                  totalProgressBar.progress = avg
+                  totalProgressText.text = "$avg%"
+              }
+
+              private fun resolveFileName(uri: Uri): String {
+                  contentResolver.query(uri, null, null, null, null)?.use { c ->
+                      val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                      if (idx >= 0 && c.moveToFirst()) return c.getString(idx)
+                  }
+                  return uri.lastPathSegment ?: "image.jpg"
+              }
+
+              private fun resolveFileSize(uri: Uri): Long {
+                  contentResolver.query(uri, null, null, null, null)?.use { c ->
+                      val idx = c.getColumnIndex(OpenableColumns.SIZE)
+                      if (idx >= 0 && c.moveToFirst()) return c.getLong(idx)
+                  }
+                  return 0L
+              }
+
+              private fun appendLog(msg: String, level: String) {
+                  val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+                  logLines.add("[$ts] [$level] $msg")
+                  if (logLines.size > 120) logLines.removeAt(0)
+                  logTextView.text = logLines.joinToString("\n")
+              }
+
+              private fun cardBox(bgHex: String, strokeHex: String): LinearLayout {
+                  return LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(12), dp(12), dp(12), dp(12))
+                      background = android.graphics.drawable.GradientDrawable().apply {
+                          setColor(Color.parseColor(bgHex))
+                          setStroke(dp(1), Color.parseColor(strokeHex))
+                          cornerRadius = dp(14).toFloat()
+                      }
+                  }
+              }
+
+              private fun sectionTitle(txt: String): TextView = TextView(this).apply {
+                  text = txt
+                  textSize = 14f
+                  setTypeface(null, Typeface.BOLD)
+                  setTextColor(Color.WHITE)
+                  setPadding(0, 0, 0, dp(6))
+              }
+
+              private fun fieldLabel(txt: String): TextView = TextView(this).apply {
+                  text = txt
+                  textSize = 11.5f
+                  setTypeface(null, Typeface.BOLD)
+                  setTextColor(Color.parseColor("#CBD5E1"))
+                  setPadding(0, dp(6), 0, dp(3))
+              }
+
+              private fun actionBtn(txt: String, bgHex: String, fgHex: String, onClick: () -> Unit): Button {
+                  return Button(this).apply {
+                      text = txt
+                      textSize = 11f
+                      isAllCaps = false
+                      setTextColor(Color.parseColor(fgHex))
+                      background = android.graphics.drawable.GradientDrawable().apply {
+                          setColor(Color.parseColor(bgHex))
+                          cornerRadius = dp(10).toFloat()
+                      }
+                      setPadding(dp(10), dp(4), dp(10), dp(4))
+                      setOnClickListener { onClick() }
+                  }
+              }
+
+              private fun darkSpinner(options: List<String>): Spinner {
+                  return Spinner(this).apply {
+                      adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, options)
+                      setBackgroundColor(Color.parseColor("#1E293B"))
+                  }
+              }
+
+              private fun darkEditText(initial: String, onChanged: () -> Unit): EditText {
+                  return EditText(this).apply {
+                      setText(initial)
+                      inputType = InputType.TYPE_CLASS_NUMBER
+                      setTextColor(Color.parseColor("#818CF8"))
+                      setBackgroundColor(Color.parseColor("#1E293B"))
+                      textSize = 12f
+                      setPadding(dp(8), dp(6), dp(8), dp(6))
+                      addTextChangedListener(object : TextWatcher {
+                          override fun afterTextChanged(s: Editable?) { onChanged() }
+                          override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                          override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                      })
+                  }
+              }
+
+              private fun simpleSelectListener(onSelect: () -> Unit) = object : AdapterView.OnItemSelectedListener {
+                  override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { onSelect() }
+                  override fun onNothingSelected(p: AdapterView<*>?) {}
+              }
+
+              private fun spaceW(dpVal: Int) = Space(this).apply { layoutParams = LinearLayout.LayoutParams(dp(dpVal), 1) }
+              private fun spaceH(dpVal: Int) = Space(this).apply { layoutParams = LinearLayout.LayoutParams(1, dp(dpVal)) }
+              private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+          }
+          EOF
+
+      - name: Initialize Gradle Wrapper & Build Android APK
+        run: |
+          gradle wrapper --gradle-version 8.5
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload Compiled Hyperbit-AVIF Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Hyperbit-AVIF
-          path: release-output/Hyperbit-AVIF.apk
+          name: Hyperbit-AVIF-Android-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
+  
