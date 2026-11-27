@@ -1,0 +1,1480 @@
+name: Build Hyperbit AVIF APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK 36 & Build-Tools 36.0.0
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+
+      - name: Set up Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Generate Android Project Structure & Source Code
+        run: |
+          mkdir -p app/src/main/java/com/hyperbit/avif
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "HyperbitAVIF"
+          include ':app'
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'com.android.application' version '8.9.1' apply false
+          }
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.enableJetifier=false
+          android.nonTransitiveRClass=true
+          EOF
+
+          keytool -genkeypair -v \
+            -keystore app/hyperbit-release.jks \
+            -alias hyperbit \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass hyperbit123 -keypass hyperbit123 \
+            -dname "CN=Hyperbit AVIF, OU=Studio, O=Hyperbit, L=Bandung, S=West Java, C=ID"
+
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.hyperbit.avif'
+              compileSdk 36
+              buildToolsVersion "36.0.0"
+
+              defaultConfig {
+                  applicationId "com.hyperbit.avif"
+                  minSdk 28
+                  targetSdk 35
+                  versionCode 248
+                  versionName "2.4.8-native"
+              }
+
+              signingConfigs {
+                  release {
+                      storeFile file("hyperbit-release.jks")
+                      storePassword "hyperbit123"
+                      keyAlias "hyperbit"
+                      keyPassword "hyperbit123"
+                      enableV1Signing true
+                      enableV2Signing true
+                      enableV3Signing true
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              lint {
+                  checkReleaseBuilds false
+                  abortOnError false
+              }
+
+              packaging {
+                  jniLibs {
+                      useLegacyPackaging true
+                  }
+              }
+          }
+
+          configurations.all {
+              resolutionStrategy {
+                  force 'androidx.annotation:annotation:1.9.1'
+                  force 'androidx.annotation:annotation-jvm:1.9.1'
+              }
+          }
+
+          dependencies {
+              implementation platform('org.jetbrains.kotlin:kotlin-bom:2.1.0')
+              implementation 'androidx.appcompat:appcompat:1.7.0'
+              implementation 'com.google.android.material:material:1.12.0'
+              implementation 'androidx.exifinterface:exifinterface:1.3.7'
+              implementation 'io.github.awxkee:avif-coder:2.2.1'
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="Hyperbit AVIF"
+                  android:largeHeap="true"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.HyperbitAVIF">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values/styles.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.HyperbitAVIF" parent="Theme.MaterialComponents.NoActionBar">
+                  <item name="colorPrimary">#6366F1</item>
+                  <item name="colorPrimaryVariant">#4F46E5</item>
+                  <item name="colorSecondary">#10B981</item>
+                  <item name="android:windowBackground">#0B0F19</item>
+                  <item name="android:statusBarColor">#0B0F19</item>
+                  <item name="android:navigationBarColor">#0B0F19</item>
+              </style>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/ic_launcher_background.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#0F172A"
+                  android:pathData="M0,0h108v108h-108z" />
+              <path
+                  android:fillColor="#4F46E5"
+                  android:pathData="M14,14h80v80h-80z" />
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/ic_launcher_foreground.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#10B981"
+                  android:pathData="M34,30h12v18h16v-18h12v48h-12v-18h-16v18h-12z" />
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/card_bg.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#111827" />
+              <stroke android:width="1dp" android:color="#1F2937" />
+              <corners android:radius="12dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/btn_primary.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <gradient android:startColor="#6366F1" android:endColor="#10B981" android:angle="0" />
+              <corners android:radius="10dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/btn_secondary.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#1E293B" />
+              <stroke android:width="1dp" android:color="#334155" />
+              <corners android:radius="10dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="#0B0F19"
+              android:fillViewport="true">
+
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:orientation="vertical"
+                  android:padding="14dp">
+
+                  <!-- Header -->
+                  <LinearLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:background="@drawable/card_bg"
+                      android:gravity="center_vertical"
+                      android:orientation="horizontal"
+                      android:padding="12dp">
+
+                      <LinearLayout
+                          android:layout_width="0dp"
+                          android:layout_height="wrap_content"
+                          android:layout_weight="1"
+                          android:orientation="vertical">
+
+                          <TextView
+                              android:layout_width="wrap_content"
+                              android:layout_height="wrap_content"
+                              android:text="HYPERBIT AVIF STUDIO"
+                              android:textColor="#F8FAFC"
+                              android:textSize="17sp"
+                              android:textStyle="bold" />
+
+                          <TextView
+                              android:id="@+id/tvSubtitle"
+                              android:layout_width="wrap_content"
+                              android:layout_height="wrap_content"
+                              android:text="Native AV1 / libavif Encoder • v2.4.8"
+                              android:textColor="#34D399"
+                              android:textSize="11sp" />
+                      </LinearLayout>
+
+                      <TextView
+                          android:id="@+id/tvCoreBadge"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:background="#1E293B"
+                          android:paddingLeft="10dp"
+                          android:paddingTop="5dp"
+                          android:paddingRight="10dp"
+                          android:paddingBottom="5dp"
+                          android:text="8 CORES"
+                          android:textColor="#93C5FD"
+                          android:textSize="11sp"
+                          android:textStyle="bold" />
+                  </LinearLayout>
+
+                  <!-- Real-Time CPU & RAM Monitor -->
+                  <LinearLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="10dp"
+                      android:background="@drawable/card_bg"
+                      android:orientation="vertical"
+                      android:padding="12dp">
+
+                      <LinearLayout
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:orientation="horizontal">
+
+                          <TextView
+                              android:id="@+id/tvCpuStats"
+                              android:layout_width="0dp"
+                              android:layout_height="wrap_content"
+                              android:layout_weight="1"
+                              android:text="CPU Workers: 0% • Active: 0"
+                              android:textColor="#E2E8F0"
+                              android:textSize="12sp"
+                              android:textStyle="bold" />
+
+                          <TextView
+                              android:id="@+id/tvRamStats"
+                              android:layout_width="wrap_content"
+                              android:layout_height="wrap_content"
+                              android:text="RAM: 0 / 0 MB"
+                              android:textColor="#A7F3D0"
+                              android:textSize="12sp" />
+                      </LinearLayout>
+
+                      <com.hyperbit.avif.CpuGraphView
+                          android:id="@+id/cpuGraphView"
+                          android:layout_width="match_parent"
+                          android:layout_height="68dp"
+                          android:layout_marginTop="8dp" />
+                  </LinearLayout>
+
+                  <!-- Encoding Settings -->
+                  <LinearLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="10dp"
+                      android:background="@drawable/card_bg"
+                      android:orientation="vertical"
+                      android:padding="12dp">
+
+                      <TextView
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="ENCODER PARAMETERS"
+                          android:textColor="#94A3B8"
+                          android:textSize="11sp"
+                          android:textStyle="bold" />
+
+                      <!-- Format & Threads -->
+                      <LinearLayout
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:layout_marginTop="8dp"
+                          android:orientation="horizontal">
+
+                          <LinearLayout
+                              android:layout_width="0dp"
+                              android:layout_height="wrap_content"
+                              android:layout_marginEnd="6dp"
+                              android:layout_weight="1"
+                              android:orientation="vertical">
+
+                              <TextView
+                                  android:layout_width="wrap_content"
+                                  android:layout_height="wrap_content"
+                                  android:text="Output Format"
+                                  android:textColor="#CBD5E1"
+                                  android:textSize="11sp" />
+
+                              <Spinner
+                                  android:id="@+id/spFormat"
+                                  android:layout_width="match_parent"
+                                  android:layout_height="40dp"
+                                  android:layout_marginTop="4dp"
+                                  android:background="#1E293B" />
+                          </LinearLayout>
+
+                          <LinearLayout
+                              android:layout_width="0dp"
+                              android:layout_height="wrap_content"
+                              android:layout_marginStart="6dp"
+                              android:layout_weight="1"
+                              android:orientation="vertical">
+
+                              <TextView
+                                  android:layout_width="wrap_content"
+                                  android:layout_height="wrap_content"
+                                  android:text="CPU Threads (-j)"
+                                  android:textColor="#CBD5E1"
+                                  android:textSize="11sp" />
+
+                              <Spinner
+                                  android:id="@+id/spThreads"
+                                  android:layout_width="match_parent"
+                                  android:layout_height="40dp"
+                                  android:layout_marginTop="4dp"
+                                  android:background="#1E293B" />
+                          </LinearLayout>
+                      </LinearLayout>
+
+                      <!-- Quality Slider -->
+                      <LinearLayout
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:layout_marginTop="10dp"
+                          android:orientation="horizontal">
+
+                          <TextView
+                              android:id="@+id/tvQualityLabel"
+                              android:layout_width="0dp"
+                              android:layout_height="wrap_content"
+                              android:layout_weight="1"
+                              android:text="Quality: 68% (Balanced AV1)"
+                              android:textColor="#F8FAFC"
+                              android:textSize="12sp"
+                              android:textStyle="bold" />
+
+                          <TextView
+                              android:id="@+id/tvEstSize"
+                              android:layout_width="wrap_content"
+                              android:layout_height="wrap_content"
+                              android:text="Est. Savings: ~65%"
+                              android:textColor="#34D399"
+                              android:textSize="11sp" />
+                      </LinearLayout>
+
+                      <SeekBar
+                          android:id="@+id/sbQuality"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:layout_marginTop="4dp"
+                          android:max="100"
+                          android:progress="68" />
+
+                      <!-- Quality Presets -->
+                      <LinearLayout
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:layout_marginTop="6dp"
+                          android:orientation="horizontal">
+
+                          <Button
+                              android:id="@+id/btnPreset49"
+                              android:layout_width="0dp"
+                              android:layout_height="34dp"
+                              android:layout_marginEnd="4dp"
+                              android:layout_weight="1"
+                              android:background="@drawable/btn_secondary"
+                              android:text="49 Web"
+                              android:textColor="#E2E8F0"
+                              android:textSize="10sp" />
+
+                          <Button
+                              android:id="@+id/btnPreset68"
+                              android:layout_width="0dp"
+                              android:layout_height="34dp"
+                              android:layout_marginEnd="4dp"
+                              android:layout_weight="1"
+                              android:background="@drawable/btn_secondary"
+                              android:text="68 Std"
+                              android:textColor="#E2E8F0"
+                              android:textSize="10sp" />
+
+                          <Button
+                              android:id="@+id/btnPreset82"
+                              android:layout_width="0dp"
+                              android:layout_height="34dp"
+                              android:layout_marginEnd="4dp"
+                              android:layout_weight="1"
+                              android:background="@drawable/btn_secondary"
+                              android:text="82 High"
+                              android:textColor="#E2E8F0"
+                              android:textSize="10sp" />
+
+                          <Button
+                              android:id="@+id/btnPreset95"
+                              android:layout_width="0dp"
+                              android:layout_height="34dp"
+                              android:layout_weight="1"
+                              android:background="@drawable/btn_secondary"
+                              android:text="95 Max"
+                              android:textColor="#E2E8F0"
+                              android:textSize="10sp" />
+                      </LinearLayout>
+
+                      <!-- Resize & Sharpen -->
+                      <LinearLayout
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:layout_marginTop="10dp"
+                          android:orientation="horizontal">
+
+                          <LinearLayout
+                              android:layout_width="0dp"
+                              android:layout_height="wrap_content"
+                              android:layout_marginEnd="6dp"
+                              android:layout_weight="1"
+                              android:orientation="vertical">
+
+                              <TextView
+                                  android:layout_width="wrap_content"
+                                  android:layout_height="wrap_content"
+                                  android:text="Scale / Max Resolution"
+                                  android:textColor="#CBD5E1"
+                                  android:textSize="11sp" />
+
+                              <Spinner
+                                  android:id="@+id/spScale"
+                                  android:layout_width="match_parent"
+                                  android:layout_height="40dp"
+                                  android:layout_marginTop="4dp"
+                                  android:background="#1E293B" />
+                          </LinearLayout>
+
+                          <LinearLayout
+                              android:layout_width="0dp"
+                              android:layout_height="wrap_content"
+                              android:layout_marginStart="6dp"
+                              android:layout_weight="1"
+                              android:orientation="vertical">
+
+                              <TextView
+                                  android:layout_width="wrap_content"
+                                  android:layout_height="wrap_content"
+                                  android:text="Speed / Effort"
+                                  android:textColor="#CBD5E1"
+                                  android:textSize="11sp" />
+
+                              <Spinner
+                                  android:id="@+id/spSpeed"
+                                  android:layout_width="match_parent"
+                                  android:layout_height="40dp"
+                                  android:layout_marginTop="4dp"
+                                  android:background="#1E293B" />
+                          </LinearLayout>
+                      </LinearLayout>
+                  </LinearLayout>
+
+                  <!-- Action Buttons -->
+                  <LinearLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="10dp"
+                      android:orientation="horizontal">
+
+                      <Button
+                          android:id="@+id/btnPickImages"
+                          android:layout_width="0dp"
+                          android:layout_height="44dp"
+                          android:layout_marginEnd="6dp"
+                          android:layout_weight="1"
+                          android:background="@drawable/btn_secondary"
+                          android:text="+ PILIH GAMBAR"
+                          android:textColor="#F8FAFC"
+                          android:textSize="12sp"
+                          android:textStyle="bold" />
+
+                      <Button
+                          android:id="@+id/btnConvert"
+                          android:layout_width="0dp"
+                          android:layout_height="44dp"
+                          android:layout_marginStart="6dp"
+                          android:layout_weight="1"
+                          android:background="@drawable/btn_primary"
+                          android:text="CONVERT BATCH"
+                          android:textColor="#FFFFFF"
+                          android:textSize="12sp"
+                          android:textStyle="bold" />
+                  </LinearLayout>
+
+                  <LinearLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="8dp"
+                      android:orientation="horizontal">
+
+                      <Button
+                          android:id="@+id/btnStop"
+                          android:layout_width="0dp"
+                          android:layout_height="38dp"
+                          android:layout_marginEnd="6dp"
+                          android:layout_weight="1"
+                          android:background="@drawable/btn_secondary"
+                          android:enabled="false"
+                          android:text="STOP"
+                          android:textColor="#FCA5A5"
+                          android:textSize="11sp" />
+
+                      <Button
+                          android:id="@+id/btnExportZip"
+                          android:layout_width="0dp"
+                          android:layout_height="38dp"
+                          android:layout_marginEnd="6dp"
+                          android:layout_weight="1"
+                          android:background="@drawable/btn_secondary"
+                          android:enabled="false"
+                          android:text="EXPORT .ZIP"
+                          android:textColor="#93C5FD"
+                          android:textSize="11sp" />
+
+                      <Button
+                          android:id="@+id/btnClear"
+                          android:layout_width="0dp"
+                          android:layout_height="38dp"
+                          android:layout_weight="1"
+                          android:background="@drawable/btn_secondary"
+                          android:text="CLEAR"
+                          android:textColor="#CBD5E1"
+                          android:textSize="11sp" />
+                  </LinearLayout>
+
+                  <!-- Progress & Queue -->
+                  <LinearLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="10dp"
+                      android:background="@drawable/card_bg"
+                      android:orientation="vertical"
+                      android:padding="12dp">
+
+                      <TextView
+                          android:id="@+id/tvQueueSummary"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Antrean: 0 file • Total Input: 0 KB"
+                          android:textColor="#E2E8F0"
+                          android:textSize="12sp"
+                          android:textStyle="bold" />
+
+                      <ProgressBar
+                          android:id="@+id/progressBar"
+                          style="?android:attr/progressBarStyleHorizontal"
+                          android:layout_width="match_parent"
+                          android:layout_height="8dp"
+                          android:layout_marginTop="8dp"
+                          android:max="100"
+                          android:progress="0" />
+
+                      <LinearLayout
+                          android:id="@+id/queueContainer"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:layout_marginTop="8dp"
+                          android:orientation="vertical" />
+                  </LinearLayout>
+
+                  <!-- Diagnostic Log -->
+                  <LinearLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:layout_marginTop="10dp"
+                      android:background="@drawable/card_bg"
+                      android:orientation="vertical"
+                      android:padding="12dp">
+
+                      <TextView
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:text="DIAGNOSTIC LOG"
+                          android:textColor="#94A3B8"
+                          android:textSize="11sp"
+                          android:textStyle="bold" />
+
+                      <TextView
+                          android:id="@+id/tvLog"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:layout_marginTop="6dp"
+                          android:fontFamily="monospace"
+                          android:text="[READY] Native libavif (HeifCoder) siap."
+                          android:textColor="#94A3B8"
+                          android:textSize="10sp" />
+                  </LinearLayout>
+
+              </LinearLayout>
+          </ScrollView>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/hyperbit/avif/CpuGraphView.java
+          package com.hyperbit.avif;
+
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.graphics.Path;
+          import android.util.AttributeSet;
+          import android.view.View;
+
+          import java.util.LinkedList;
+
+          public class CpuGraphView extends View {
+              private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final LinkedList<Float> samples = new LinkedList<>();
+              private static final int MAX_SAMPLES = 48;
+
+              public CpuGraphView(Context context, AttributeSet attrs) {
+                  super(context, attrs);
+                  gridPaint.setColor(Color.parseColor("#1E293B"));
+                  gridPaint.setStrokeWidth(2f);
+
+                  linePaint.setColor(Color.parseColor("#10B981"));
+                  linePaint.setStrokeWidth(4f);
+                  linePaint.setStyle(Paint.Style.STROKE);
+
+                  fillPaint.setColor(Color.parseColor("#2610B981"));
+                  fillPaint.setStyle(Paint.Style.FILL);
+
+                  for (int i = 0; i < MAX_SAMPLES; i++) {
+                      samples.add(0f);
+                  }
+              }
+
+              public void pushSample(float pct) {
+                  float clamped = Math.max(0f, Math.min(100f, pct));
+                  if (samples.size() >= MAX_SAMPLES) {
+                      samples.removeFirst();
+                  }
+                  samples.add(clamped);
+                  if (clamped > 80f) {
+                      linePaint.setColor(Color.parseColor("#F43F5E"));
+                      fillPaint.setColor(Color.parseColor("#26F43F5E"));
+                  } else if (clamped > 45f) {
+                      linePaint.setColor(Color.parseColor("#6366F1"));
+                      fillPaint.setColor(Color.parseColor("#266366F1"));
+                  } else {
+                      linePaint.setColor(Color.parseColor("#10B981"));
+                      fillPaint.setColor(Color.parseColor("#2610B981"));
+                  }
+                  invalidate();
+              }
+
+              @Override
+              protected void onDraw(Canvas canvas) {
+                  super.onDraw(canvas);
+                  float w = getWidth();
+                  float h = getHeight();
+                  if (w <= 0 || h <= 0) return;
+
+                  canvas.drawColor(Color.parseColor("#0B0F19"));
+                  canvas.drawLine(0, h * 0.25f, w, h * 0.25f, gridPaint);
+                  canvas.drawLine(0, h * 0.50f, w, h * 0.50f, gridPaint);
+                  canvas.drawLine(0, h * 0.75f, w, h * 0.75f, gridPaint);
+
+                  if (samples.size() < 2) return;
+
+                  Path strokePath = new Path();
+                  Path areaPath = new Path();
+                  float stepX = w / (MAX_SAMPLES - 1);
+
+                  areaPath.moveTo(0, h);
+                  int idx = 0;
+                  for (Float val : samples) {
+                      float x = idx * stepX;
+                      float y = h - (val / 100f) * (h - 8f) - 4f;
+                      if (idx == 0) {
+                          strokePath.moveTo(x, y);
+                      } else {
+                          strokePath.lineTo(x, y);
+                      }
+                      areaPath.lineTo(x, y);
+                      idx++;
+                  }
+                  areaPath.lineTo(w, h);
+                  areaPath.close();
+
+                  canvas.drawPath(areaPath, fillPaint);
+                  canvas.drawPath(strokePath, linePaint);
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/hyperbit/avif/MainActivity.java
+          package com.hyperbit.avif;
+
+          import android.app.ActivityManager;
+          import android.content.ClipData;
+          import android.content.ContentValues;
+          import android.content.Intent;
+          import android.database.Cursor;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Matrix;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.Process;
+          import android.os.SystemClock;
+          import android.provider.MediaStore;
+          import android.provider.OpenableColumns;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.ArrayAdapter;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.ProgressBar;
+          import android.widget.SeekBar;
+          import android.widget.Spinner;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import androidx.activity.result.ActivityResultLauncher;
+          import androidx.activity.result.contract.ActivityResultContracts;
+          import androidx.appcompat.app.AppCompatActivity;
+          import androidx.exifinterface.media.ExifInterface;
+
+          import com.radzivon.bartoshyk.avif.coder.HeifCoder;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.lang.reflect.Method;
+          import java.text.SimpleDateFormat;
+          import java.util.ArrayList;
+          import java.util.Date;
+          import java.util.HashSet;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Set;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+          import java.util.concurrent.atomic.AtomicBoolean;
+          import java.util.concurrent.atomic.AtomicInteger;
+          import java.util.zip.ZipEntry;
+          import java.util.zip.ZipOutputStream;
+
+          public class MainActivity extends AppCompatActivity {
+
+              private static class QueueItem {
+                  final Uri uri;
+                  final String originalName;
+                  final long inputBytes;
+                  String status = "Queued";
+                  String outputName = "";
+                  long outputBytes = 0;
+                  byte[] encodedData = null;
+
+                  QueueItem(Uri uri, String originalName, long inputBytes) {
+                      this.uri = uri;
+                      this.originalName = originalName;
+                      this.inputBytes = inputBytes;
+                  }
+              }
+
+              private final List<QueueItem> queue = new ArrayList<>();
+              private final AtomicBoolean isRunning = new AtomicBoolean(false);
+              private final AtomicBoolean stopRequested = new AtomicBoolean(false);
+              private final AtomicInteger activeWorkers = new AtomicInteger(0);
+              private final Handler uiHandler = new Handler(Looper.getMainLooper());
+
+              private CpuGraphView cpuGraphView;
+              private TextView tvCpuStats, tvRamStats, tvQualityLabel, tvEstSize, tvQueueSummary, tvLog;
+              private Spinner spFormat, spThreads, spScale, spSpeed;
+              private SeekBar sbQuality;
+              private Button btnPickImages, btnConvert, btnStop, btnExportZip, btnClear;
+              private ProgressBar progressBar;
+              private LinearLayout queueContainer;
+
+              private int cpuCores = 4;
+              private long lastCpuTimeMs = 0;
+              private long lastWallTimeMs = 0;
+
+              private final ActivityResultLauncher<Intent> pickerLauncher =
+                      registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                          if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                              Intent data = result.getData();
+                              int added = 0;
+                              if (data.getClipData() != null) {
+                                  ClipData clip = data.getClipData();
+                                  for (int i = 0; i < clip.getItemCount(); i++) {
+                                      if (addUriToQueue(clip.getItemAt(i).getUri())) added++;
+                                  }
+                              } else if (data.getData() != null) {
+                                  if (addUriToQueue(data.getData())) added++;
+                              }
+                              appendLog("Ditambahkan " + added + " file ke antrean.");
+                              refreshQueueUI();
+                          }
+                      });
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+
+                  cpuCores = Math.max(1, Runtime.getRuntime().availableProcessors());
+                  TextView tvCoreBadge = findViewById(R.id.tvCoreBadge);
+                  tvCoreBadge.setText(cpuCores + " CORES");
+
+                  cpuGraphView = findViewById(R.id.cpuGraphView);
+                  tvCpuStats = findViewById(R.id.tvCpuStats);
+                  tvRamStats = findViewById(R.id.tvRamStats);
+                  tvQualityLabel = findViewById(R.id.tvQualityLabel);
+                  tvEstSize = findViewById(R.id.tvEstSize);
+                  tvQueueSummary = findViewById(R.id.tvQueueSummary);
+                  tvLog = findViewById(R.id.tvLog);
+
+                  spFormat = findViewById(R.id.spFormat);
+                  spThreads = findViewById(R.id.spThreads);
+                  spScale = findViewById(R.id.spScale);
+                  spSpeed = findViewById(R.id.spSpeed);
+                  sbQuality = findViewById(R.id.sbQuality);
+
+                  btnPickImages = findViewById(R.id.btnPickImages);
+                  btnConvert = findViewById(R.id.btnConvert);
+                  btnStop = findViewById(R.id.btnStop);
+                  btnExportZip = findViewById(R.id.btnExportZip);
+                  btnClear = findViewById(R.id.btnClear);
+                  progressBar = findViewById(R.id.progressBar);
+                  queueContainer = findViewById(R.id.queueContainer);
+
+                  setupSpinners();
+                  setupListeners();
+                  startTelemetryLoop();
+              }
+
+              private void setupSpinners() {
+                  setDarkSpinner(spFormat, new String[]{"AVIF (Native AV1)", "HEIC (Native HEVC)", "WEBP", "JPEG"});
+
+                  List<String> threadOpts = new ArrayList<>();
+                  threadOpts.add("All (" + cpuCores + " Threads)");
+                  for (int t = 1; t <= cpuCores; t++) {
+                      threadOpts.add(t + (t == 1 ? " Thread (Safe)" : " Threads"));
+                  }
+                  setDarkSpinner(spThreads, threadOpts.toArray(new String[0]));
+
+                  setDarkSpinner(spScale, new String[]{
+                          "100% (Original)",
+                          "75% Scale",
+                          "50% Scale",
+                          "Max 2560px (2K)",
+                          "Max 1920px (FHD)",
+                          "Max 1280px (HD)"
+                  });
+
+                  setDarkSpinner(spSpeed, new String[]{
+                          "6 - Balanced (Default)",
+                          "8 - Fast",
+                          "4 - High Quality",
+                          "2 - Ultra Compression"
+                  });
+              }
+
+              private void setDarkSpinner(Spinner spinner, String[] items) {
+                  ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items) {
+                      @Override
+                      public View getView(int position, View convertView, ViewGroup parent) {
+                          TextView tv = (TextView) super.getView(position, convertView, parent);
+                          tv.setTextColor(Color.parseColor("#F8FAFC"));
+                          tv.setTextSize(12f);
+                          tv.setPadding(24, 12, 24, 12);
+                          return tv;
+                      }
+
+                      @Override
+                      public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                          TextView tv = (TextView) super.getDropDownView(position, convertView, parent);
+                          tv.setBackgroundColor(Color.parseColor("#1E293B"));
+                          tv.setTextColor(Color.parseColor("#F8FAFC"));
+                          tv.setTextSize(13f);
+                          tv.setPadding(28, 24, 28, 24);
+                          return tv;
+                      }
+                  };
+                  spinner.setAdapter(adapter);
+              }
+
+              private void setupListeners() {
+                  sbQuality.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                      @Override
+                      public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                          int q = Math.max(10, progress);
+                          tvQualityLabel.setText("Quality: " + q + "%");
+                          int estSavings = Math.max(15, Math.min(92, 100 - (int) (q * 0.52)));
+                          tvEstSize.setText("Est. Savings: ~" + estSavings + "%");
+                      }
+
+                      @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+                      @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+                  });
+
+                  findViewById(R.id.btnPreset49).setOnClickListener(v -> sbQuality.setProgress(49));
+                  findViewById(R.id.btnPreset68).setOnClickListener(v -> sbQuality.setProgress(68));
+                  findViewById(R.id.btnPreset82).setOnClickListener(v -> sbQuality.setProgress(82));
+                  findViewById(R.id.btnPreset95).setOnClickListener(v -> sbQuality.setProgress(95));
+
+                  btnPickImages.setOnClickListener(v -> {
+                      Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                      intent.addCategory(Intent.CATEGORY_OPENABLE);
+                      intent.setType("image/*");
+                      intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                      pickerLauncher.launch(intent);
+                  });
+
+                  btnConvert.setOnClickListener(v -> startBatchConversion());
+
+                  btnStop.setOnClickListener(v -> {
+                      stopRequested.set(true);
+                      appendLog("[STOP] Membatalkan sisa antrean...");
+                  });
+
+                  btnClear.setOnClickListener(v -> {
+                      if (isRunning.get()) return;
+                      queue.clear();
+                      progressBar.setProgress(0);
+                      btnExportZip.setEnabled(false);
+                      refreshQueueUI();
+                      appendLog("Antrean dibersihkan.");
+                  });
+
+                  btnExportZip.setOnClickListener(v -> exportCompletedAsZip());
+              }
+
+              private boolean addUriToQueue(Uri uri) {
+                  if (uri == null) return false;
+                  String name = "image_" + System.currentTimeMillis() + ".jpg";
+                  long size = 0;
+                  try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+                      if (cursor != null && cursor.moveToFirst()) {
+                          int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                          int sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE);
+                          if (nameIdx >= 0) name = cursor.getString(nameIdx);
+                          if (sizeIdx >= 0) size = cursor.getLong(sizeIdx);
+                      }
+                  } catch (Exception ignored) {}
+                  queue.add(new QueueItem(uri, name, size));
+                  return true;
+              }
+
+              private int getSelectedThreadCount() {
+                  int pos = spThreads.getSelectedItemPosition();
+                  if (pos <= 0) return cpuCores;
+                  return Math.min(cpuCores, pos);
+              }
+
+              private void startBatchConversion() {
+                  if (isRunning.get()) return;
+                  if (queue.isEmpty()) {
+                      Toast.makeText(this, "Pilih gambar terlebih dahulu", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
+
+                  isRunning.set(true);
+                  stopRequested.set(false);
+                  setControlsEnabled(false);
+
+                  final int threads = getSelectedThreadCount();
+                  final int quality = Math.max(10, sbQuality.getProgress());
+                  final int formatIdx = spFormat.getSelectedItemPosition();
+                  final int scaleIdx = spScale.getSelectedItemPosition();
+
+                  appendLog("[START] Memproses " + queue.size() + " file • Threads: " + threads + " • Q=" + quality);
+
+                  ExecutorService pool = Executors.newFixedThreadPool(threads);
+                  final AtomicInteger doneCount = new AtomicInteger(0);
+                  final int total = queue.size();
+
+                  for (QueueItem item : queue) {
+                      item.status = "Waiting...";
+                      pool.submit(() -> {
+                          if (stopRequested.get()) {
+                              item.status = "Cancelled";
+                              uiHandler.post(this::refreshQueueUI);
+                              return;
+                          }
+                          activeWorkers.incrementAndGet();
+                          item.status = "Encoding...";
+                          uiHandler.post(this::refreshQueueUI);
+
+                          try {
+                              processSingleItem(item, formatIdx, quality, scaleIdx);
+                          } catch (Throwable t) {
+                              item.status = "Error: " + t.getMessage();
+                              uiHandler.post(() -> appendLog("[ERR] " + item.originalName + ": " + t.getMessage()));
+                          } finally {
+                              activeWorkers.decrementAndGet();
+                              int completed = doneCount.incrementAndGet();
+                              uiHandler.post(() -> {
+                                  progressBar.setProgress((completed * 100) / Math.max(1, total));
+                                  refreshQueueUI();
+                                  if (completed >= total) {
+                                      finishBatch(pool);
+                                  }
+                              });
+                          }
+                      });
+                  }
+                  pool.shutdown();
+              }
+
+              private void finishBatch(ExecutorService pool) {
+                  isRunning.set(false);
+                  setControlsEnabled(true);
+                  boolean hasSuccess = false;
+                  for (QueueItem item : queue) {
+                      if (item.encodedData != null && item.encodedData.length > 0) {
+                          hasSuccess = true;
+                          break;
+                      }
+                  }
+                  btnExportZip.setEnabled(hasSuccess);
+                  appendLog("[DONE] Batch selesai.");
+              }
+
+              private void processSingleItem(QueueItem item, int formatIdx, int quality, int scaleIdx) throws Exception {
+                  Bitmap bmp = decodeSafeBitmap(item.uri);
+                  if (bmp == null) throw new IllegalStateException("Gagal decode gambar");
+
+                  bmp = applyScale(bmp, scaleIdx);
+
+                  byte[] outBytes;
+                  String ext;
+                  String mime;
+
+                  if (formatIdx == 0) {
+                      // Native AVIF via libavif (HeifCoder)
+                      HeifCoder coder = new HeifCoder();
+                      outBytes = encodeAvifCompat(coder, bmp, quality);
+                      ext = ".avif";
+                      mime = "image/avif";
+                  } else if (formatIdx == 1) {
+                      // Native HEIC via HeifCoder
+                      HeifCoder coder = new HeifCoder();
+                      outBytes = coder.encodeHeic(bmp);
+                      ext = ".heic";
+                      mime = "image/heic";
+                  } else if (formatIdx == 2) {
+                      ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                      bmp.compress(Bitmap.CompressFormat.WEBP, quality, baos);
+                      outBytes = baos.toByteArray();
+                      ext = ".webp";
+                      mime = "image/webp";
+                  } else {
+                      Bitmap flat = Bitmap.createBitmap(bmp.getWidth(), bmp.getHeight(), Bitmap.Config.ARGB_8888);
+                      Canvas c = new Canvas(flat);
+                      c.drawColor(Color.WHITE);
+                      c.drawBitmap(bmp, 0, 0, null);
+                      if (flat != bmp) bmp.recycle();
+                      bmp = flat;
+
+                      ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                      bmp.compress(Bitmap.CompressFormat.JPEG, quality, baos);
+                      outBytes = baos.toByteArray();
+                      ext = ".jpg";
+                      mime = "image/jpeg";
+                  }
+
+                  bmp.recycle();
+
+                  String baseName = item.originalName.replaceFirst("\\.[^.]+$", "");
+                  item.outputName = baseName + ext;
+                  item.outputBytes = outBytes.length;
+                  item.encodedData = outBytes;
+
+                  saveToPictures(item.outputName, mime, outBytes);
+
+                  long savedPct = item.inputBytes > 0
+                          ? Math.round((1.0 - ((double) item.outputBytes / item.inputBytes)) * 100.0)
+                          : 0;
+                  item.status = "OK • " + formatBytes(item.outputBytes) + " (" + (savedPct >= 0 ? "-" + savedPct : "+" + Math.abs(savedPct)) + "%)";
+                  uiHandler.post(() -> appendLog("[OK] " + item.outputName + " -> " + formatBytes(item.outputBytes)));
+              }
+
+              private byte[] encodeAvifCompat(HeifCoder coder, Bitmap bmp, int quality) throws Exception {
+                  // Try (Bitmap, int quality) overload if exposed, else fall back to encodeAvif(Bitmap)
+                  for (Method m : HeifCoder.class.getMethods()) {
+                      if (m.getName().equals("encodeAvif")) {
+                          Class<?>[] pts = m.getParameterTypes();
+                          if (pts.length == 2 && pts[0] == Bitmap.class && pts[1] == int.class) {
+                              return (byte[]) m.invoke(coder, bmp, quality);
+                          }
+                      }
+                  }
+                  return coder.encodeAvif(bmp);
+              }
+
+              private Bitmap decodeSafeBitmap(Uri uri) throws Exception {
+                  BitmapFactory.Options bounds = new BitmapFactory.Options();
+                  bounds.inJustDecodeBounds = true;
+                  try (InputStream is = getContentResolver().openInputStream(uri)) {
+                      BitmapFactory.decodeStream(is, null, bounds);
+                  }
+
+                  int sampleSize = 1;
+                  int maxDim = Math.max(bounds.outWidth, bounds.outHeight);
+                  while (maxDim / sampleSize > 4096) {
+                      sampleSize *= 2;
+                  }
+
+                  BitmapFactory.Options opts = new BitmapFactory.Options();
+                  opts.inSampleSize = sampleSize;
+                  opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+                  Bitmap bmp;
+                  try (InputStream is = getContentResolver().openInputStream(uri)) {
+                      bmp = BitmapFactory.decodeStream(is, null, opts);
+                  }
+                  if (bmp == null) return null;
+
+                  int rotation = 0;
+                  try (InputStream is = getContentResolver().openInputStream(uri)) {
+                      if (is != null) {
+                          ExifInterface exif = new ExifInterface(is);
+                          int orient = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                          if (orient == ExifInterface.ORIENTATION_ROTATE_90) rotation = 90;
+                          else if (orient == ExifInterface.ORIENTATION_ROTATE_180) rotation = 180;
+                          else if (orient == ExifInterface.ORIENTATION_ROTATE_270) rotation = 270;
+                      }
+                  } catch (Exception ignored) {}
+
+                  if (rotation != 0) {
+                      Matrix m = new Matrix();
+                      m.postRotate(rotation);
+                      Bitmap rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.getWidth(), bmp.getHeight(), m, true);
+                      if (rotated != bmp) bmp.recycle();
+                      bmp = rotated;
+                  }
+                  return bmp;
+              }
+
+              private Bitmap applyScale(Bitmap src, int scaleIdx) {
+                  int w = src.getWidth();
+                  int h = src.getHeight();
+                  int targetW = w;
+                  int targetH = h;
+
+                  if (scaleIdx == 1) {
+                      targetW = (int) (w * 0.75f);
+                      targetH = (int) (h * 0.75f);
+                  } else if (scaleIdx == 2) {
+                      targetW = (int) (w * 0.50f);
+                      targetH = (int) (h * 0.50f);
+                  } else if (scaleIdx == 3 && Math.max(w, h) > 2560) {
+                      float ratio = 2560f / Math.max(w, h);
+                      targetW = Math.round(w * ratio);
+                      targetH = Math.round(h * ratio);
+                  } else if (scaleIdx == 4 && Math.max(w, h) > 1920) {
+                      float ratio = 1920f / Math.max(w, h);
+                      targetW = Math.round(w * ratio);
+                      targetH = Math.round(h * ratio);
+                  } else if (scaleIdx == 5 && Math.max(w, h) > 1280) {
+                      float ratio = 1280f / Math.max(w, h);
+                      targetW = Math.round(w * ratio);
+                      targetH = Math.round(h * ratio);
+                  }
+
+                  targetW = Math.max(2, (targetW / 2) * 2);
+                  targetH = Math.max(2, (targetH / 2) * 2);
+
+                  if (targetW == w && targetH == h) return src;
+                  Bitmap scaled = Bitmap.createScaledBitmap(src, targetW, targetH, true);
+                  if (scaled != src) src.recycle();
+                  return scaled;
+              }
+
+              private void saveToPictures(String fileName, String mime, byte[] data) throws Exception {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                      ContentValues values = new ContentValues();
+                      values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                      values.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                      values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HyperbitAVIF");
+                      Uri itemUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                      if (itemUri != null) {
+                          try (OutputStream os = getContentResolver().openOutputStream(itemUri)) {
+                              if (os != null) os.write(data);
+                          }
+                      }
+                  } else {
+                      File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "HyperbitAVIF");
+                      if (!dir.exists()) dir.mkdirs();
+                      File outFile = new File(dir, fileName);
+                      try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                          fos.write(data);
+                      }
+                  }
+              }
+
+              private void exportCompletedAsZip() {
+                  try {
+                      String zipName = "HyperbitAVIF_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".zip";
+                      ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                      Set<String> usedNames = new HashSet<>();
+                      try (ZipOutputStream zos = new ZipOutputStream(baos)) {
+                          for (QueueItem item : queue) {
+                              if (item.encodedData != null && item.encodedData.length > 0) {
+                                  String entryName = item.outputName;
+                                  int idx = 1;
+                                  while (usedNames.contains(entryName)) {
+                                      entryName = idx + "_" + item.outputName;
+                                      idx++;
+                                  }
+                                  usedNames.add(entryName);
+                                  zos.putNextEntry(new ZipEntry(entryName));
+                                  zos.write(item.encodedData);
+                                  zos.closeEntry();
+                              }
+                          }
+                      }
+                      byte[] zipBytes = baos.toByteArray();
+
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          ContentValues values = new ContentValues();
+                          values.put(MediaStore.MediaColumns.DISPLAY_NAME, zipName);
+                          values.put(MediaStore.MediaColumns.MIME_TYPE, "application/zip");
+                          values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                          Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                          if (uri != null) {
+                              try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                                  if (os != null) os.write(zipBytes);
+                              }
+                          }
+                      } else {
+                          File dl = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                          try (FileOutputStream fos = new FileOutputStream(new File(dl, zipName))) {
+                              fos.write(zipBytes);
+                          }
+                      }
+                      appendLog("[ZIP] Tersimpan ke Downloads/" + zipName);
+                      Toast.makeText(this, "ZIP tersimpan di Downloads/" + zipName, Toast.LENGTH_LONG).show();
+                  } catch (Exception e) {
+                      appendLog("[ERR ZIP] " + e.getMessage());
+                  }
+              }
+
+              private void setControlsEnabled(boolean enabled) {
+                  btnPickImages.setEnabled(enabled);
+                  btnConvert.setEnabled(enabled);
+                  btnClear.setEnabled(enabled);
+                  spFormat.setEnabled(enabled);
+                  spThreads.setEnabled(enabled);
+                  spScale.setEnabled(enabled);
+                  spSpeed.setEnabled(enabled);
+                  sbQuality.setEnabled(enabled);
+                  btnStop.setEnabled(!enabled);
+              }
+
+              private void refreshQueueUI() {
+                  long totalIn = 0;
+                  for (QueueItem q : queue) totalIn += q.inputBytes;
+                  tvQueueSummary.setText("Antrean: " + queue.size() + " file • Total Input: " + formatBytes(totalIn));
+
+                  queueContainer.removeAllViews();
+                  for (QueueItem item : queue) {
+                      LinearLayout row = new LinearLayout(this);
+                      row.setOrientation(LinearLayout.VERTICAL);
+                      row.setPadding(16, 12, 16, 12);
+                      LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                      lp.topMargin = 8;
+                      row.setLayoutParams(lp);
+                      row.setBackgroundColor(Color.parseColor("#0F172A"));
+
+                      TextView tvName = new TextView(this);
+                      tvName.setText(item.originalName + " (" + formatBytes(item.inputBytes) + ")");
+                      tvName.setTextColor(Color.parseColor("#F1F5F9"));
+                      tvName.setTextSize(12f);
+
+                      TextView tvSt = new TextView(this);
+                      tvSt.setText(item.status);
+                      tvSt.setTextSize(11f);
+                      if (item.status.startsWith("OK")) {
+                          tvSt.setTextColor(Color.parseColor("#34D399"));
+                      } else if (item.status.startsWith("Error")) {
+                          tvSt.setTextColor(Color.parseColor("#F87171"));
+                      } else {
+                          tvSt.setTextColor(Color.parseColor("#93C5FD"));
+                      }
+
+                      row.addView(tvName);
+                      row.addView(tvSt);
+                      queueContainer.addView(row);
+                  }
+              }
+
+              private void startTelemetryLoop() {
+                  lastCpuTimeMs = Process.getElapsedCpuTime();
+                  lastWallTimeMs = SystemClock.elapsedRealtime();
+
+                  uiHandler.postDelayed(new Runnable() {
+                      @Override
+                      public void run() {
+                          long nowCpu = Process.getElapsedCpuTime();
+                          long nowWall = SystemClock.elapsedRealtime();
+                          long dCpu = Math.max(0, nowCpu - lastCpuTimeMs);
+                          long dWall = Math.max(1, nowWall - lastWallTimeMs);
+                          lastCpuTimeMs = nowCpu;
+                          lastWallTimeMs = nowWall;
+
+                          float cpuPct = Math.min(100f, (dCpu * 100f) / (dWall * cpuCores));
+                          int workers = activeWorkers.get();
+                          if (workers > 0 && cpuPct < 10f) {
+                              cpuPct = Math.min(100f, (workers * 100f) / cpuCores);
+                          }
+                          cpuGraphView.pushSample(cpuPct);
+                          tvCpuStats.setText(String.format(Locale.US, "CPU Load: %.0f%% • Active Workers: %d/%d",
+                                  cpuPct, workers, getSelectedThreadCount()));
+
+                          ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+                          ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+                          if (am != null) {
+                              am.getMemoryInfo(mi);
+                              long usedMb = (mi.totalMem - mi.availMem) / (1024 * 1024);
+                              long totalMb = mi.totalMem / (1024 * 1024);
+                              tvRamStats.setText("RAM: " + usedMb + " / " + totalMb + " MB");
+                          }
+
+                          uiHandler.postDelayed(this, 650);
+                      }
+                  }, 650);
+              }
+
+              private void appendLog(String msg) {
+                  String current = tvLog.getText().toString();
+                  String[] lines = current.split("\n");
+                  StringBuilder sb = new StringBuilder();
+                  int start = Math.max(0, lines.length - 14);
+                  for (int i = start; i < lines.length; i++) {
+                      sb.append(lines[i]).append("\n");
+                  }
+                  sb.append(msg);
+                  tvLog.setText(sb.toString());
+              }
+
+              private String formatBytes(long bytes) {
+                  if (bytes < 1024) return bytes + " B";
+                  double kb = bytes / 1024.0;
+                  if (kb < 1024) return String.format(Locale.US, "%.1f KB", kb);
+                  return String.format(Locale.US, "%.2f MB", kb / 1024.0);
+              }
+          }
+          EOF
+
+      - name: Build & Sign Release APK
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Prepare Final APK Artifact
+        run: |
+          mkdir -p release-output
+          cp app/build/outputs/apk/release/app-release.apk release-output/Hyperbit-AVIF.apk
+          ls -lh release-output/Hyperbit-AVIF.apk
+
+      - name: Upload Hyperbit-AVIF.apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hyperbit-AVIF
+          path: release-output/Hyperbit-AVIF.apk
+          retention-days: 30
