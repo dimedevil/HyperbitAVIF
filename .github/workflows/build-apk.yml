@@ -257,9 +257,11 @@ jobs:
           cat << 'EOF' > app/src/main/res/layout/activity_main.xml
           <?xml version="1.0" encoding="utf-8"?>
           <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/rootScroll"
               android:layout_width="match_parent"
               android:layout_height="match_parent"
               android:background="#0B0F19"
+              android:clipToPadding="false"
               android:fillViewport="true">
 
               <LinearLayout
@@ -465,7 +467,7 @@ jobs:
                           android:layout_marginTop="6dp"
                           android:orientation="horizontal">
 
-                          <Button
+                          <androidx.appcompat.widget.AppCompatButton
                               android:id="@+id/btnPreset49"
                               android:layout_width="0dp"
                               android:layout_height="34dp"
@@ -473,10 +475,11 @@ jobs:
                               android:layout_weight="1"
                               android:background="@drawable/btn_secondary"
                               android:text="49 Web"
+                              android:textAllCaps="false"
                               android:textColor="#E2E8F0"
                               android:textSize="10sp" />
 
-                          <Button
+                          <androidx.appcompat.widget.AppCompatButton
                               android:id="@+id/btnPreset68"
                               android:layout_width="0dp"
                               android:layout_height="34dp"
@@ -484,10 +487,11 @@ jobs:
                               android:layout_weight="1"
                               android:background="@drawable/btn_secondary"
                               android:text="68 Std"
+                              android:textAllCaps="false"
                               android:textColor="#E2E8F0"
                               android:textSize="10sp" />
 
-                          <Button
+                          <androidx.appcompat.widget.AppCompatButton
                               android:id="@+id/btnPreset82"
                               android:layout_width="0dp"
                               android:layout_height="34dp"
@@ -495,16 +499,18 @@ jobs:
                               android:layout_weight="1"
                               android:background="@drawable/btn_secondary"
                               android:text="82 High"
+                              android:textAllCaps="false"
                               android:textColor="#E2E8F0"
                               android:textSize="10sp" />
 
-                          <Button
+                          <androidx.appcompat.widget.AppCompatButton
                               android:id="@+id/btnPreset95"
                               android:layout_width="0dp"
                               android:layout_height="34dp"
                               android:layout_weight="1"
                               android:background="@drawable/btn_secondary"
                               android:text="95 Max"
+                              android:textAllCaps="false"
                               android:textColor="#E2E8F0"
                               android:textSize="10sp" />
                       </LinearLayout>
@@ -569,7 +575,7 @@ jobs:
                       android:layout_marginTop="10dp"
                       android:orientation="horizontal">
 
-                      <Button
+                      <androidx.appcompat.widget.AppCompatButton
                           android:id="@+id/btnPickImages"
                           android:layout_width="0dp"
                           android:layout_height="44dp"
@@ -581,7 +587,7 @@ jobs:
                           android:textSize="12sp"
                           android:textStyle="bold" />
 
-                      <Button
+                      <androidx.appcompat.widget.AppCompatButton
                           android:id="@+id/btnConvert"
                           android:layout_width="0dp"
                           android:layout_height="44dp"
@@ -600,7 +606,7 @@ jobs:
                       android:layout_marginTop="8dp"
                       android:orientation="horizontal">
 
-                      <Button
+                      <androidx.appcompat.widget.AppCompatButton
                           android:id="@+id/btnStop"
                           android:layout_width="0dp"
                           android:layout_height="38dp"
@@ -612,7 +618,7 @@ jobs:
                           android:textColor="#FCA5A5"
                           android:textSize="11sp" />
 
-                      <Button
+                      <androidx.appcompat.widget.AppCompatButton
                           android:id="@+id/btnExportZip"
                           android:layout_width="0dp"
                           android:layout_height="38dp"
@@ -624,7 +630,7 @@ jobs:
                           android:textColor="#93C5FD"
                           android:textSize="11sp" />
 
-                      <Button
+                      <androidx.appcompat.widget.AppCompatButton
                           android:id="@+id/btnClear"
                           android:layout_width="0dp"
                           android:layout_height="38dp"
@@ -804,6 +810,7 @@ jobs:
           import android.app.ActivityManager;
           import android.content.ClipData;
           import android.content.ContentValues;
+          import android.content.Context;
           import android.content.Intent;
           import android.database.Cursor;
           import android.graphics.Bitmap;
@@ -835,6 +842,9 @@ jobs:
           import androidx.activity.result.ActivityResultLauncher;
           import androidx.activity.result.contract.ActivityResultContracts;
           import androidx.appcompat.app.AppCompatActivity;
+          import androidx.core.graphics.Insets;
+          import androidx.core.view.ViewCompat;
+          import androidx.core.view.WindowInsetsCompat;
           import androidx.exifinterface.media.ExifInterface;
 
           import com.radzivon.bartoshyk.avif.coder.HeifCoder;
@@ -844,6 +854,7 @@ jobs:
           import java.io.FileOutputStream;
           import java.io.InputStream;
           import java.io.OutputStream;
+          import java.lang.reflect.InvocationTargetException;
           import java.lang.reflect.Method;
           import java.text.SimpleDateFormat;
           import java.util.ArrayList;
@@ -896,27 +907,34 @@ jobs:
               private long lastWallTimeMs = 0;
 
               private final ActivityResultLauncher<Intent> pickerLauncher =
-                      registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
-                          if (result.getResultCode() == RESULT_OK && result.getData() != null) {
-                              Intent data = result.getData();
-                              int added = 0;
-                              if (data.getClipData() != null) {
-                                  ClipData clip = data.getClipData();
-                                  for (int i = 0; i < clip.getItemCount(); i++) {
-                                      if (addUriToQueue(clip.getItemAt(i).getUri())) added++;
-                                  }
-                              } else if (data.getData() != null) {
-                                  if (addUriToQueue(data.getData())) added++;
+                  registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                      if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                          Intent data = result.getData();
+                          int added = 0;
+                          if (data.getClipData() != null) {
+                              ClipData clip = data.getClipData();
+                              for (int i = 0; i < clip.getItemCount(); i++) {
+                                  if (addUriToQueue(clip.getItemAt(i).getUri())) added++;
                               }
-                              appendLog("Ditambahkan " + added + " file ke antrean.");
-                              refreshQueueUI();
+                          } else if (data.getData() != null) {
+                              if (addUriToQueue(data.getData())) added++;
                           }
-                      });
+                          appendLog("Ditambahkan " + added + " file ke antrean.");
+                          refreshQueueUI();
+                      }
+                  });
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   setContentView(R.layout.activity_main);
+
+                  View rootScroll = findViewById(R.id.rootScroll);
+                  ViewCompat.setOnApplyWindowInsetsListener(rootScroll, (v, windowInsets) -> {
+                      Insets bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
+                      v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                      return windowInsets;
+                  });
 
                   cpuCores = Math.max(1, Runtime.getRuntime().availableProcessors());
                   TextView tvCoreBadge = findViewById(R.id.tvCoreBadge);
@@ -960,19 +978,19 @@ jobs:
                   setDarkSpinner(spThreads, threadOpts.toArray(new String[0]));
 
                   setDarkSpinner(spScale, new String[]{
-                          "100% (Original)",
-                          "75% Scale",
-                          "50% Scale",
-                          "Max 2560px (2K)",
-                          "Max 1920px (FHD)",
-                          "Max 1280px (HD)"
+                      "100% (Original)",
+                      "75% Scale",
+                      "50% Scale",
+                      "Max 2560px (2K)",
+                      "Max 1920px (FHD)",
+                      "Max 1280px (HD)"
                   });
 
                   setDarkSpinner(spSpeed, new String[]{
-                          "6 - Balanced (Default)",
-                          "8 - Fast",
-                          "4 - High Quality",
-                          "2 - Ultra Compression"
+                      "6 - Balanced (Default)",
+                      "8 - Fast",
+                      "4 - High Quality",
+                      "2 - Ultra Compression"
                   });
               }
 
@@ -1077,6 +1095,7 @@ jobs:
 
                   isRunning.set(true);
                   stopRequested.set(false);
+                  progressBar.setProgress(0);
                   setControlsEnabled(false);
 
                   final int threads = getSelectedThreadCount();
@@ -1095,7 +1114,14 @@ jobs:
                       pool.submit(() -> {
                           if (stopRequested.get()) {
                               item.status = "Cancelled";
-                              uiHandler.post(this::refreshQueueUI);
+                              int completed = doneCount.incrementAndGet();
+                              uiHandler.post(() -> {
+                                  progressBar.setProgress((completed * 100) / Math.max(1, total));
+                                  refreshQueueUI();
+                                  if (completed >= total) {
+                                      finishBatch(pool);
+                                  }
+                              });
                               return;
                           }
                           activeWorkers.incrementAndGet();
@@ -1105,8 +1131,11 @@ jobs:
                           try {
                               processSingleItem(item, formatIdx, quality, scaleIdx);
                           } catch (Throwable t) {
-                              item.status = "Error: " + t.getMessage();
-                              uiHandler.post(() -> appendLog("[ERR] " + item.originalName + ": " + t.getMessage()));
+                              Throwable cause = (t instanceof InvocationTargetException && t.getCause() != null)
+                                  ? t.getCause() : t;
+                              String msg = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
+                              item.status = "Error: " + msg;
+                              uiHandler.post(() -> appendLog("[ERR] " + item.originalName + ": " + msg));
                           } finally {
                               activeWorkers.decrementAndGet();
                               int completed = doneCount.incrementAndGet();
@@ -1148,18 +1177,19 @@ jobs:
                   String mime;
 
                   if (formatIdx == 0) {
-                      HeifCoder coder = new HeifCoder();
-                      outBytes = encodeAvifCompat(coder, bmp, quality);
+                      outBytes = encodeNativeCompat(bmp, quality, true);
                       ext = ".avif";
                       mime = "image/avif";
                   } else if (formatIdx == 1) {
-                      HeifCoder coder = new HeifCoder();
-                      outBytes = coder.encodeHeic(bmp);
+                      outBytes = encodeNativeCompat(bmp, quality, false);
                       ext = ".heic";
                       mime = "image/heic";
                   } else if (formatIdx == 2) {
                       ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                      bmp.compress(Bitmap.CompressFormat.WEBP, quality, baos);
+                      Bitmap.CompressFormat webpFmt = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                          ? Bitmap.CompressFormat.WEBP_LOSSY
+                          : Bitmap.CompressFormat.WEBP;
+                      bmp.compress(webpFmt, quality, baos);
                       outBytes = baos.toByteArray();
                       ext = ".webp";
                       mime = "image/webp";
@@ -1188,22 +1218,72 @@ jobs:
                   saveToPictures(item.outputName, mime, outBytes);
 
                   long savedPct = item.inputBytes > 0
-                          ? Math.round((1.0 - ((double) item.outputBytes / item.inputBytes)) * 100.0)
-                          : 0;
+                      ? Math.round((1.0 - ((double) item.outputBytes / item.inputBytes)) * 100.0)
+                      : 0;
                   item.status = "OK • " + formatBytes(item.outputBytes) + " (" + (savedPct >= 0 ? "-" + savedPct : "+" + Math.abs(savedPct)) + "%)";
                   uiHandler.post(() -> appendLog("[OK] " + item.outputName + " -> " + formatBytes(item.outputBytes)));
               }
 
-              private byte[] encodeAvifCompat(HeifCoder coder, Bitmap bmp, int quality) throws Exception {
-                  for (Method m : HeifCoder.class.getMethods()) {
-                      if (m.getName().equals("encodeAvif")) {
+              private Object createHeifCoder() throws Exception {
+                  Class<?> cls = HeifCoder.class;
+                  try {
+                      return cls.getDeclaredConstructor(Context.class).newInstance(this);
+                  } catch (NoSuchMethodException ignored) {
+                      return cls.getDeclaredConstructor().newInstance();
+                  }
+              }
+
+              private byte[] encodeNativeCompat(Bitmap bmp, int quality, boolean isAvif) throws Exception {
+                  Object coder = createHeifCoder();
+                  String methodName = isAvif ? "encodeAvif" : "encodeHeic";
+                  Method[] methods = coder.getClass().getMethods();
+
+                  for (Method m : methods) {
+                      if (m.getName().equals(methodName)) {
                           Class<?>[] pts = m.getParameterTypes();
                           if (pts.length == 2 && pts[0] == Bitmap.class && pts[1] == int.class) {
                               return (byte[]) m.invoke(coder, bmp, quality);
                           }
                       }
                   }
-                  return coder.encodeAvif(bmp);
+                  for (Method m : methods) {
+                      if (m.getName().equals(methodName)) {
+                          Class<?>[] pts = m.getParameterTypes();
+                          if (pts.length == 1 && pts[0] == Bitmap.class) {
+                              return (byte[]) m.invoke(coder, bmp);
+                          }
+                      }
+                  }
+                  for (Method m : methods) {
+                      if (m.getName().equals(methodName + "$default")) {
+                          Class<?>[] pts = m.getParameterTypes();
+                          if (pts.length >= 4 && pts[1] == Bitmap.class) {
+                              Object[] args = new Object[pts.length];
+                              args[0] = coder;
+                              args[1] = bmp;
+                              int mask = 0;
+                              int paramCount = pts.length - 3;
+                              for (int i = 1; i < paramCount; i++) {
+                                  int argIdx = i + 1;
+                                  if (i == 1 && (pts[argIdx] == int.class || pts[argIdx] == Integer.class)) {
+                                      args[argIdx] = quality;
+                                  } else {
+                                      mask |= (1 << i);
+                                      if (pts[argIdx] == int.class) args[argIdx] = 0;
+                                      else if (pts[argIdx] == boolean.class) args[argIdx] = false;
+                                      else if (pts[argIdx] == float.class) args[argIdx] = 0f;
+                                      else if (pts[argIdx] == double.class) args[argIdx] = 0d;
+                                      else if (pts[argIdx] == long.class) args[argIdx] = 0L;
+                                      else args[argIdx] = null;
+                                  }
+                              }
+                              args[pts.length - 2] = mask;
+                              args[pts.length - 1] = null;
+                              return (byte[]) m.invoke(null, args);
+                          }
+                      }
+                  }
+                  throw new NoSuchMethodException("Method " + methodName + " tidak ditemukan di HeifCoder");
               }
 
               private Bitmap decodeSafeBitmap(Uri uri) throws Exception {
@@ -1290,11 +1370,19 @@ jobs:
                       values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
                       values.put(MediaStore.MediaColumns.MIME_TYPE, mime);
                       values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HyperbitAVIF");
-                      Uri itemUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-                      if (itemUri != null) {
-                          try (OutputStream os = getContentResolver().openOutputStream(itemUri)) {
-                              if (os != null) os.write(data);
-                          }
+                      Uri itemUri;
+                      try {
+                          itemUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                      } catch (IllegalArgumentException ignored) {
+                          values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/HyperbitAVIF");
+                          itemUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                      }
+                      if (itemUri == null) {
+                          throw new IllegalStateException("Gagal membuat entry MediaStore");
+                      }
+                      try (OutputStream os = getContentResolver().openOutputStream(itemUri)) {
+                          if (os == null) throw new IllegalStateException("OutputStream null");
+                          os.write(data);
                       }
                   } else {
                       File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "HyperbitAVIF");
@@ -1376,7 +1464,7 @@ jobs:
                       row.setOrientation(LinearLayout.VERTICAL);
                       row.setPadding(16, 12, 16, 12);
                       LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                              ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                       lp.topMargin = 8;
                       row.setLayoutParams(lp);
                       row.setBackgroundColor(Color.parseColor("#0F172A"));
@@ -1424,7 +1512,7 @@ jobs:
                           }
                           cpuGraphView.pushSample(cpuPct);
                           tvCpuStats.setText(String.format(Locale.US, "CPU Load: %.0f%% • Active Workers: %d/%d",
-                                  cpuPct, workers, getSelectedThreadCount()));
+                              cpuPct, workers, getSelectedThreadCount()));
 
                           ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
                           ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
