@@ -70,6 +70,7 @@ jobs:
           android.nonTransitiveRClass=true
           EOF
 
+          rm -f app/hyperbit-release.jks
           keytool -genkeypair -v \
             -keystore app/hyperbit-release.jks \
             -alias hyperbit \
@@ -508,7 +509,7 @@ jobs:
                               android:textSize="10sp" />
                       </LinearLayout>
 
-                      <!-- Resize & Sharpen -->
+                      <!-- Resize & Speed -->
                       <LinearLayout
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
@@ -1147,13 +1148,11 @@ jobs:
                   String mime;
 
                   if (formatIdx == 0) {
-                      // Native AVIF via libavif (HeifCoder)
                       HeifCoder coder = new HeifCoder();
                       outBytes = encodeAvifCompat(coder, bmp, quality);
                       ext = ".avif";
                       mime = "image/avif";
                   } else if (formatIdx == 1) {
-                      // Native HEIC via HeifCoder
                       HeifCoder coder = new HeifCoder();
                       outBytes = coder.encodeHeic(bmp);
                       ext = ".heic";
@@ -1196,7 +1195,6 @@ jobs:
               }
 
               private byte[] encodeAvifCompat(HeifCoder coder, Bitmap bmp, int quality) throws Exception {
-                  // Try (Bitmap, int quality) overload if exposed, else fall back to encodeAvif(Bitmap)
                   for (Method m : HeifCoder.class.getMethods()) {
                       if (m.getName().equals("encodeAvif")) {
                           Class<?>[] pts = m.getParameterTypes();
@@ -1478,4 +1476,3 @@ jobs:
           name: Hyperbit-AVIF
           path: release-output/Hyperbit-AVIF.apk
           retention-days: 30
-```[cite: 1]
